@@ -28,7 +28,7 @@ jobs:
                   # Copy source files
                   cp mod_auth_mongodb.c "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}/"
                   cp Makefile "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}/"
-                  cp README.md "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}/"
+                  cp readme.md "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}/"
                   cp CHANGELOG.md "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}/"
                   cp proftpd.conf.sample "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}/"
                   cp AI_DISCLOSURE.md "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}/"
