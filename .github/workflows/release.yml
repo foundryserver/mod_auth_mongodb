@@ -44,12 +44,19 @@ jobs:
               run: |
                   # Extract changelog section for this version
                   VERSION="${{ steps.get_version.outputs.VERSION }}"
-                  awk "/## \[$VERSION\]/,/## \[/" CHANGELOG.md | sed '$d' > release_notes.md
 
-                  # If no changelog found, create a default message
+                  # Extract content between this version and next version heading
+                  awk "/## \[$VERSION\]/,/^## \[/" CHANGELOG.md | sed '1d;$d' > release_notes.md
+
+                  # If no changelog found or empty, create a default message
                   if [ ! -s release_notes.md ]; then
                     echo "Release $VERSION" > release_notes.md
                   fi
+
+                  # Show extracted content for debugging
+                  echo "=== Extracted release notes ==="
+                  cat release_notes.md
+                  echo "=== End of release notes ==="
 
             - name: Create GitHub Release
               uses: softprops/action-gh-release@v1
