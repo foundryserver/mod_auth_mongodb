@@ -88,7 +88,7 @@ install: $(TARGET)
 	@echo "Module installed to /usr/local/libexec/proftpd/"
 	@echo ""
 	@echo "Next steps:"
-	@echo "1. Add 'LoadModule mod_auth_mongodb.c' to your proftpd.conf"
+	@echo "1. Add 'LoadModule mod_auth_mongodb.so' to your proftpd.conf"
 	@echo "2. Configure MongoDB authentication directives"
 	@echo "3. Restart ProFTPD"
 

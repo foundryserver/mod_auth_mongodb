@@ -160,7 +160,7 @@ mongodb://username:password@mongo1.vm.lan:27017,mongo2.vm.lan:27017,mongo3.vm.la
 See `proftpd.conf.sample` for a complete example. Key directives:
 
 ```apache
-LoadModule mod_auth_mongodb.c
+LoadModule mod_auth_mongodb.so
 
 # Connection settings
 AuthMongoConnectionString "mongodb://user:pass@host:27017/..."

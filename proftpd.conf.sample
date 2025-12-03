@@ -61,7 +61,7 @@ TransferLog                     /var/log/proftpd/xferlog
 # ============================================================================
 
 # Load the MongoDB authentication module (must be first!)
-LoadModule                      mod_auth_mongodb.c
+LoadModule                      mod_auth_mongodb.so
 
 # --- MongoDB Connection Settings ---
 
