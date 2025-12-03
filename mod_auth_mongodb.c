@@ -97,7 +97,7 @@ typedef struct {
 
 static user_cache_entry_t user_cache = {0};
 
-module PR_SHARED_MODULE auth_mongodb_module;
+module auth_mongodb_module;
 
 /* Forward declarations */
 static int auth_mongodb_sess_init(void);
@@ -1232,7 +1232,7 @@ static int auth_mongodb_init(void) {
  * handlers, and metadata. ProFTPD uses this structure to integrate the
  * module into its authentication chain.
  * ============================================================================== */
-module PR_SHARED_MODULE auth_mongodb_module = {
+module auth_mongodb_module = {
     NULL, NULL,                     /* Always NULL (reserved for internal use) */
     0x20,                           /* API version 2.0 (ProFTPD module API) */
     "auth_mongodb",                 /* Module name (used in logs and directives) */
