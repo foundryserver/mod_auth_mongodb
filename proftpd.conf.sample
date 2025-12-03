@@ -7,7 +7,7 @@
 #
 # PREREQUISITES:
 # 1. ProFTPD compiled with --enable-dso
-# 2. mod_auth_mongodb.so installed in libexec directory
+# 2. mod_auth_mongodb compiled with prxs and installed (make && make install)
 # 3. MongoDB server accessible with user collection set up
 # 4. User home directories created with proper ownership
 #
@@ -43,8 +43,8 @@ MaxInstances                    30
 
 # User/group for main daemon process (NOT for authenticated users)
 # The daemon drops privileges after binding to port 21
-User                            proftpd
-Group                           proftpd
+User                            nobody
+Group                           nogroup
 
 # ============================================================================
 # LOGGING CONFIGURATION
@@ -61,7 +61,8 @@ TransferLog                     /var/log/proftpd/xferlog
 # ============================================================================
 
 # Load the MongoDB authentication module (must be first!)
-LoadModule                      mod_auth_mongodb.so
+# IMPORTANT: Use .c extension (ProFTPD DSO convention), not .so
+LoadModule                      mod_auth_mongodb.c
 
 # --- MongoDB Connection Settings ---
 
@@ -173,16 +174,22 @@ DefaultRoot                     ~
     
     # SFTP port (2222 is common, 22 conflicts with system SSH)
     Port                        2222
-    
+
+    # Options
+    SFTPOptions IgnoreSFTPUploadPerms IgnoreSCPUploadPerms IgnoreSFTPSetOwners IgnoreSFTPSetExtendedAttributes IgnoreSFTPUploadExtendedAttributes
+
     # SFTP-specific transfer log
     SFTPLog                     /var/log/proftpd/sftp.log
     
     # --- SFTP Host Keys ---
     # Generate these with: ssh-keygen -t rsa -f /etc/proftpd/ssh_host_rsa_key -N ""
     # You need at least one host key for SFTP to work
-    SFTPHostKey                 /etc/proftpd/ssh_host_rsa_key
-    SFTPHostKey                 /etc/proftpd/ssh_host_ecdsa_key
+    SFTPHostKey /etc/ssh/ssh_host_rsa_key
+    SFTPHostKey /etc/ssh/ssh_host_ecdsa_key
     
+    # Turn on Compression
+    SFTPCompression on
+
     # SFTP authentication method (password from MongoDB)
     SFTPAuthMethods             password
     

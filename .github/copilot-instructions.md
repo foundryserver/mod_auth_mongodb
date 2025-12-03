@@ -11,3 +11,13 @@ Create a `./readme.md` file in your repository root with your custom coding guid
 **Example README.md structure:**
 
 ** Never Guess, always consult the official documentation for accuracy. **
+
+## SSH Access
+
+When working with SSH-related code, ensure to follow best security practices. Always validate inputs and handle exceptions properly. You will need to use sudo
+
+username: manager
+private key: ~/.ssh/ansible
+host: 192.168.255.152
+
+Project location: /root/

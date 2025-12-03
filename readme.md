@@ -48,6 +48,8 @@ This module has been hardened for production use with the following security mea
 
 ## Quick Start
 
+> **⚠️ CRITICAL:** ProFTPD DSO modules **must** be compiled using the `prxs` tool (ProFTPD Extension Tool) with libtool. Direct gcc compilation will create a shared library that ProFTPD cannot load, resulting in "Invalid argument" errors. Additionally, the `LoadModule` directive must reference the module as `mod_auth_mongodb.c` (not `.so`) - this is a ProFTPD convention where the configuration references the source filename.
+
 ### 1. Install Prerequisites
 
 **Debian/Ubuntu:**
@@ -61,6 +63,21 @@ sudo apt-get install libmongoc-dev libbson-dev proftpd-dev pkg-config build-esse
 ```bash
 sudo yum install mongo-c-driver-devel proftpd-devel pkgconfig gcc
 ```
+
+**Verify Prerequisites:**
+
+```bash
+# Check ProFTPD has DSO support
+proftpd -V | grep "DSO support"
+
+# Verify prxs tool is available
+which prxs
+
+# Check MongoDB C driver
+pkg-config --modversion libmongoc-1.0
+```
+
+If `prxs` is not found, ProFTPD must be rebuilt with `--enable-dso`.
 
 ### 2. Build ProFTPD with DSO Support
 
@@ -76,20 +93,117 @@ sudo make install
 
 ### 3. Build the MongoDB Module
 
-**Option A: Using prxs (recommended):**
+**Why prxs is Required:**
+
+ProFTPD DSO modules have a specific internal structure that `prxs` creates using libtool. Direct gcc compilation (even with `-shared -fPIC`) creates a standard shared library that lacks this structure. When ProFTPD attempts to load a module compiled without prxs, it fails with "Invalid argument" because the module doesn't conform to ProFTPD's DSO requirements.
+
+**Option A: Using Makefile (recommended):**
 
 ```bash
-prxs -c -i -d \
-  $(pkg-config --cflags libmongoc-1.0) \
-  $(pkg-config --libs libmongoc-1.0) \
-  mod_auth_mongodb.c
+# Build the module (uses prxs internally)
+make
+
+# Verify build succeeded
+ls -l .libs/mod_auth_mongodb.so
+
+# Install to /usr/local/libexec/
+sudo make install
+
+# Verify installation
+ls -l /usr/local/libexec/mod_auth_mongodb.*
 ```
 
-**Option B: Using Makefile:**
+**Option B: Using prxs directly:**
 
 ```bash
-make
-sudo cp mod_auth_mongodb.so /usr/local/libexec/
+# Compile with prxs
+prxs -c \
+  -I /usr/include/libmongoc-1.0 \
+  -I /usr/include/libbson-1.0 \
+  -l mongoc-1.0 \
+  -l bson-1.0 \
+  -l rt \
+  mod_auth_mongodb.c
+
+# Install
+sudo prxs -i mod_auth_mongodb.la
+
+# Verify
+ls -l /usr/local/libexec/mod_auth_mongodb.so
+```
+
+**Build Output:**
+
+A successful `prxs` build creates:
+
+- `.libs/mod_auth_mongodb.so` - The actual shared library
+- `mod_auth_mongodb.la` - Libtool metadata file (required for installation)
+- `mod_auth_mongodb.lo` - Libtool object file
+- `mod_auth_mongodb.a` - Static library
+
+**Clean Build:**
+
+```bash
+make clean
+# Or manually: prxs -d mod_auth_mongodb.c
+```
+
+Edit your `proftpd.conf` (see `proftpd.conf.sample` for complete example):
+
+```apache
+# CRITICAL: Use .c extension (ProFTPD convention), NOT .so
+LoadModule mod_auth_mongodb.c
+
+# MongoDB connection
+AuthMongoConnectionString "mongodb://user:pass@host:27017/?authSource=admin"
+AuthMongoDatabaseName "authentication"
+AuthMongoAuthCollectionName "users"
+
+# Field mappings (adjust to match your MongoDB schema)
+AuthMongoDocumentFieldUsername "username"
+AuthMongoDocumentFieldPassword "password"
+AuthMongoDocumentFieldUid "uid"
+AuthMongoDocumentFieldGid "gid"
+AuthMongoDocumentFieldPath "home_directory"
+
+# Password hashing (bcrypt recommended)
+AuthMongoPasswordHashMethod bcrypt
+
+# Optional: Enable debug logging for initial setup
+AuthMongoDebugLogging yes
+
+# Use only MongoDB authentication
+AuthOrder mod_auth_mongodb.c
+```
+
+### 5. Test Configuration
+
+```bash
+# Test syntax
+sudo proftpd -t
+
+# Look for successful module initialization:
+# "mod_auth_mongodb/1.1.1: Module initialized"
+
+# If you see "Invalid argument" error:
+# 1. Verify LoadModule uses .c extension (not .so)
+# 2. Confirm module was compiled with prxs
+# 3. Check module exists: ls -l /usr/local/libexec/mod_auth_mongodb.so
+```
+
+### 6. Start ProFTPD
+
+```bash
+# Restart ProFTPD
+sudo systemctl restart proftpd
+
+# Check logs for successful startup
+sudo tail -f /var/log/proftpd/system.log
+
+# Test connection
+ftp localhost
+# Or with SFTP:
+sftp -P 2222 username@localhost
 ```
 
 ## Configuration Directives
@@ -153,39 +267,6 @@ AuthMongoPasswordHashMethod: ( password hash method: plain, bcrypt, crypt, sha25
 
 ```
 mongodb://username:password@mongo1.vm.lan:27017,mongo2.vm.lan:27017,mongo3.vm.lan:27017/?retryWrites=true&loadBalanced=false&replicaSet=rs0&readPreference=primary&serverSelectionTimeoutMS=5000&connectTimeoutMS=10000&authSource=admin&authMechanism=SCRAM-SHA-256
-```
-
-## Configuration
-
-See `proftpd.conf.sample` for a complete example. Key directives:
-
-```apache
-LoadModule mod_auth_mongodb.so
-
-# Connection settings
-AuthMongoConnectionString "mongodb://user:pass@host:27017/..."
-AuthMongoDatabaseName "authentication"
-AuthMongoAuthCollectionName "users"
-
-# Field mappings
-AuthMongoDocumentFieldUsername "username"
-AuthMongoDocumentFieldPassword "password"
-AuthMongoDocumentFieldUid "uid"
-AuthMongoDocumentFieldGid "gid"
-AuthMongoDocumentFieldPath "home_directory"
-
-# Error messages
-AuthMongoNoAuthString "Your username/password is incorrect"
-AuthMongoNoConnectionString "Failed to connect to Authentication Server"
-
-# Password hashing method
-AuthMongoPasswordHashMethod bcrypt
-
-# Debug logging
-AuthMongoDebugLogging yes
-
-# Use only MongoDB authentication
-AuthOrder mod_auth_mongodb.c
 ```
 
 ## MongoDB Document Schema
@@ -306,55 +387,199 @@ Please note: Future contributions may also use AI assistance tools. All contribu
 
 Copyright (c) 2025. This module is provided as-is for use with ProFTPD.
 
-## License
-
-Copyright (c) 2025. This module is provided as-is for use with ProFTPD.
-
-## Support
-
-For issues:
-
-1. Enable `AuthMongoDebugLogging yes` and check `/var/log/proftpd/system.log`
-2. Verify MongoDB connection with `mongosh`
-3. Test configuration syntax with `proftpd -t`
-4. Check the fully documented `proftpd.conf.sample` for examples
-5. Open a github Issue only after completing steps 1-4.
-
-## Usage
-
-1. Configure ProFTPD using the directives above
-2. Restart ProFTPD: `sudo systemctl restart proftpd`
-3. Check logs: `/var/log/proftpd/system.log`
-4. Connect via FTP/SFTP client using credentials from MongoDB
-
 ## Troubleshooting
+
+### Module Loading Issues
+
+#### "LoadModule: error loading module: Invalid argument"
+
+This is the most common issue and has specific causes:
+
+**Cause 1: Wrong file extension in LoadModule directive**
+
+```bash
+# Check your proftpd.conf
+grep LoadModule /etc/proftpd/proftpd.conf | grep mongodb
+
+# WRONG - will fail
+LoadModule mod_auth_mongodb.so
+
+# CORRECT - will work
+LoadModule mod_auth_mongodb.c
+
+# Fix it
+sudo sed -i 's/mod_auth_mongodb.so/mod_auth_mongodb.c/' /etc/proftpd/proftpd.conf
+sudo proftpd -t
+```
+
+**Cause 2: Module compiled with direct gcc instead of prxs**
+
+```bash
+# Rebuild with prxs
+make clean
+make
+sudo make install
+
+# Verify .la file exists (created only by prxs)
+ls -l /usr/local/libexec/mod_auth_mongodb.la
+```
+
+**Cause 3: ProFTPD built without DSO support**
+
+```bash
+# Check for DSO support
+proftpd -V | grep "DSO support"
+
+# If not present, rebuild ProFTPD:
+./configure --enable-dso --sysconfdir=/etc/proftpd --with-modules=mod_tls:mod_sftp
+make
+sudo make install
+```
+
+**Cause 4: Module file missing or in wrong location**
+
+```bash
+# Check module exists
+ls -l /usr/local/libexec/mod_auth_mongodb.so
+
+# Check ProFTPD's module directory
+proftpd -V | grep "Shared Module Directory"
+
+# If module is in wrong location, reinstall
+sudo prxs -i mod_auth_mongodb.la
+```
 
 ### Enable Debug Logging
 
 Set `AuthMongoDebugLogging yes` to see detailed authentication flow in logs.
+
+```bash
+# Watch logs in real-time
+sudo tail -f /var/log/proftpd/system.log
+```
 
 ### Check MongoDB Connection
 
 Verify your connection string works:
 
 ```bash
-mongosh "mongodb://user:pass@host:27017/database"
+mongosh "mongodb://user:pass@host:27017/database?authSource=admin"
 ```
 
 ### Verify Module Loading
 
 ```bash
-proftpd -V | grep auth_mongodb
+# Test configuration syntax
+sudo proftpd -t
+
+# Should see: "mod_auth_mongodb/1.1.1: Module initialized"
+
+# List loaded modules
+proftpd -l | grep auth
 ```
 
-### Common Issues
+### Common Authentication Issuestication Issues
 
-- **Module not loading**: Check module path in LoadModule directive
-- **Connection failures**: Verify MongoDB URI, firewall, and authentication
-- **Authentication fails**:
-  - Check field names match your MongoDB schema
-  - Verify `AuthMongoPasswordHashMethod` matches your password format
-  - Enable debug logging to see password verification details
-  - Ensure bcrypt hashes start with `$2a$`, `$2b$`, or `$2y$`
-- **Permission errors**: Ensure home directories exist and are accessible
-- **Wrong hash method**: If passwords always fail, check that stored hash format matches configured method
+**MongoDB connection failures:**
+
+```bash
+# Test MongoDB connectivity
+mongosh "mongodb://user:pass@host:27017/dbname?authSource=admin"
+
+# Check firewall
+telnet mongo-host 27017
+
+# Verify credentials and authSource
+# Common mistake: wrong authSource (should match where user is defined)
+```
+
+**Authentication always fails:**
+
+```bash
+# Enable debug logging
+AuthMongoDebugLogging yes
+
+# Check field names match your MongoDB schema
+mongosh
+use authentication
+db.users.findOne({username: "testuser"})
+
+# Verify AuthMongoPasswordHashMethod matches password format:
+# - bcrypt hashes start with $2a$, $2b$, or $2y$
+# - sha512 hashes start with $6$
+# - sha256 hashes start with $5$
+```
+
+**Permission errors (can't access home directory):**
+
+```bash
+# Create home directory
+sudo mkdir -p /home/testuser
+
+# Set ownership (uid:gid from MongoDB)
+sudo chown 1001:1001 /home/testuser
+
+# Set permissions
+sudo chmod 755 /home/testuser
+
+# Verify
+ls -ld /home/testuser
+```
+
+**UID/GID validation errors in logs:**
+
+```bash
+# UIDs and GIDs must be >= 1 (never 0 for security)
+# Check MongoDB documents:
+mongosh
+db.users.find({}, {username: 1, uid: 1, gid: 1})
+
+# Values can be strings ("1001") or numbers (1001)
+# Both are accepted, but must be >= 1
+```
+
+### Build Issues
+
+**prxs not found:**
+
+```bash
+# Install ProFTPD development package
+sudo apt-get install proftpd-dev  # Debian/Ubuntu
+sudo yum install proftpd-devel    # RHEL/CentOS
+
+# Or build ProFTPD with DSO support
+./configure --enable-dso
+make && sudo make install
+```
+
+**MongoDB C driver not found:**
+
+```bash
+# Install MongoDB C driver
+sudo apt-get install libmongoc-dev libbson-dev  # Debian/Ubuntu
+sudo yum install mongo-c-driver-devel           # RHEL/CentOS
+
+# Verify
+pkg-config --modversion libmongoc-1.0
+```
+
+## Support
+
+For issues:
+
+1. **Enable debug logging**: `AuthMongoDebugLogging yes`
+2. **Check logs**: `sudo tail -f /var/log/proftpd/system.log`
+3. **Verify MongoDB connection**: `mongosh "mongodb://..."`
+4. **Test configuration**: `sudo proftpd -t`
+5. **Review documentation**: `proftpd.conf.sample` has complete examples
+6. **Check build method**: Module must be compiled with `prxs`
+7. **Verify LoadModule**: Must use `.c` extension, not `.so`
+8. **Open GitHub issue** only after completing steps 1-7
+
+## Additional Resources
+
+- **[BUILD.md](BUILD.md)** - Detailed build troubleshooting guide
+- **[proftpd.conf.sample](proftpd.conf.sample)** - Complete configuration with all directives
+- **[CHANGELOG.md](CHANGELOG.md)** - Version history and changes
+- **ProFTPD DSO Guide**: http://www.proftpd.org/docs/howto/DSO.html
+- **prxs manual**: `man prxs`
