@@ -7,7 +7,7 @@
 #
 # PREREQUISITES:
 # 1. ProFTPD compiled with --enable-dso
-# 2. mod_auth_mongodb compiled with prxs and installed (make && make install)
+# 2. mod_auth_mongodb.so installed in libexec directory
 # 3. MongoDB server accessible with user collection set up
 # 4. User home directories created with proper ownership
 #
@@ -61,8 +61,8 @@ TransferLog                     /var/log/proftpd/xferlog
 # ============================================================================
 
 # Load the MongoDB authentication module (must be first!)
-# IMPORTANT: Use .c extension (ProFTPD DSO convention), not .so
-LoadModule                      mod_auth_mongodb.c
+ModulePath /usr/local/libexec
+LoadModule mod_auth_mongodb.c
 
 # --- MongoDB Connection Settings ---
 
@@ -140,8 +140,8 @@ DefaultRoot                     ~
 
 # Root directory - deny all access by default
 <Directory />
-    AllowOverwrite              on
-    
+    AllowOverride              on
+
     # Deny all operations at root level
     <Limit ALL>
         DenyAll
@@ -167,20 +167,20 @@ DefaultRoot                     ~
     # SFTP port (2222 is common, 22 conflicts with system SSH)
     Port                        2222
 
-    # Options
-    SFTPOptions IgnoreSFTPUploadPerms IgnoreSCPUploadPerms IgnoreSFTPSetOwners IgnoreSFTPSetExtendedAttributes IgnoreSFTPUploadExtendedAttributes
-
     # SFTP-specific transfer log
     SFTPLog                     /var/log/proftpd/sftp.log
     
+    # Options
+    SFTPOptions IgnoreSFTPUploadPerms IgnoreSCPUploadPerms IgnoreSFTPSetOwners IgnoreSFTPSetExtendedAttributes IgnoreSFTPUploadExtendedAttributes
+
+    #Compression
+    SFTPCompression on
+
     # --- SFTP Host Keys ---
     # Generate these with: ssh-keygen -t rsa -f /etc/proftpd/ssh_host_rsa_key -N ""
     # You need at least one host key for SFTP to work
-    SFTPHostKey /etc/ssh/ssh_host_rsa_key
-    SFTPHostKey /etc/ssh/ssh_host_ecdsa_key
-    
-    # Turn on Compression
-    SFTPCompression on
+    SFTPHostKey                 /etc/ssh/ssh_host_rsa_key
+    SFTPHostKey                 /etc/ssh/ssh_host_ecdsa_key
 
     # SFTP authentication method (password from MongoDB)
     SFTPAuthMethods             password

@@ -1084,12 +1084,12 @@ static int auth_mongodb_sess_init(void) {
     
     c = find_config(main_server->conf, CONF_PARAM, "AuthMongoDebugLogging", FALSE);
     if (c) {
-        mongodb_debug_logging = *((int *)c->argv[0]);
+        mongodb_debug_logging = (int)(long)c->argv[0];
     }
     
     c = find_config(main_server->conf, CONF_PARAM, "AuthMongoPasswordHashMethod", FALSE);
     if (c) {
-        mongodb_password_hash_method = *((int *)c->argv[0]);
+        mongodb_password_hash_method = (int)(long)c->argv[0];
     }
     
     /* Create connection pool if not already created (first session) */
