@@ -18,8 +18,17 @@ TARGET = $(MODULE).so
 # Source files
 SOURCES = $(MODULE).c
 
+# Dependency check
+check-deps:
+	@echo "Checking dependencies..."
+	@which pkg-config > /dev/null 2>&1 || (echo "ERROR: pkg-config is not installed" && exit 1)
+	@pkg-config --exists libmongoc-1.0 || (echo "ERROR: libmongoc-1.0 not found. Install mongo-c-driver development package" && exit 1)
+	@pkg-config --exists libbson-1.0 || (echo "ERROR: libbson-1.0 not found. Install libbson development package" && exit 1)
+	@test -f /usr/local/include/proftpd/conf.h -o -f /usr/include/proftpd/conf.h || (echo "ERROR: ProFTPD headers not found. Install proftpd-dev or proftpd-devel package" && exit 1)
+	@echo "All dependencies are satisfied."
+
 # Build rule
-all: $(TARGET)
+all: check-deps $(TARGET)
 
 $(TARGET): $(SOURCES)
 	$(CC) $(CFLAGS) $(PROFTPD_INCLUDE) $(MONGOC_CFLAGS) -o $(TARGET) $(SOURCES) $(MONGOC_LIBS)
@@ -53,4 +62,4 @@ help:
 	@echo "Install dependencies (RHEL/CentOS):"
 	@echo "  sudo yum install mongo-c-driver-devel proftpd-devel pkgconfig"
 
-.PHONY: all clean install help
+.PHONY: all clean install help check-deps

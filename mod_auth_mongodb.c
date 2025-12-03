@@ -2,7 +2,33 @@
  * ProFTPD MongoDB Authentication Module
  * Copyright (c) 2025
  *
- * This module provides authentication against a MongoDB database.
+ * OVERVIEW:
+ * This module provides MongoDB-based authentication for ProFTPD FTP server.
+ * Users are authenticated against documents stored in a MongoDB collection,
+ * supporting multiple password hashing methods (plain, bcrypt, crypt, sha256, sha512).
+ *
+ * CONFIGURATION DIRECTIVES:
+ * - AuthMongoConnectionString: MongoDB connection URI
+ * - AuthMongoDatabaseName: Database name containing user collection
+ * - AuthMongoAuthCollectionName: Collection name with user documents
+ * - AuthMongoDocumentFieldUsername: Field name for username in documents
+ * - AuthMongoDocumentFieldPassword: Field name for password hash in documents
+ * - AuthMongoDocumentFieldUid: Field name for user ID (numeric string)
+ * - AuthMongoDocumentFieldGid: Field name for group ID (numeric string)
+ * - AuthMongoDocumentFieldPath: Field name for user's home directory path
+ * - AuthMongoPasswordHashMethod: Hash method (plain, bcrypt, crypt, sha256, sha512)
+ * - AuthMongoDebugLogging: Enable verbose debug logging (on/off)
+ * - AuthMongoNoAuthString: Custom error message for failed authentication
+ * - AuthMongoNoConnectionString: Custom error message for connection failures
+ *
+ * DOCUMENT STRUCTURE EXAMPLE:
+ * {
+ *   "username": "john",
+ *   "password": "$6$salt$hash...",  // SHA-512 hash
+ *   "uid": "1001",
+ *   "gid": "1001",
+ *   "path": "/home/john"
+ * }
  */
 
 #include "conf.h"
@@ -14,14 +40,23 @@
 
 #define MOD_AUTH_MONGODB_VERSION "mod_auth_mongodb/1.0"
 
-/* Password hash methods */
+/* Password hash methods - determines how stored passwords are verified
+ * PLAIN:   Direct string comparison (insecure, for testing only)
+ * BCRYPT:  Uses bcrypt algorithm ($2a$, $2b$, $2y$ prefixes)
+ * CRYPT:   Traditional Unix crypt() function
+ * SHA256:  SHA-256 based crypt ($5$ prefix)
+ * SHA512:  SHA-512 based crypt ($6$ prefix)
+ */
 #define HASH_METHOD_PLAIN   0
 #define HASH_METHOD_BCRYPT  1
 #define HASH_METHOD_CRYPT   2
 #define HASH_METHOD_SHA256  3
 #define HASH_METHOD_SHA512  4
 
-/* Module configuration structure */
+/* Module configuration structure - runtime configuration values loaded from
+ * ProFTPD config file during session initialization. These values determine
+ * how to connect to MongoDB and which fields to query for user data.
+ */
 static char *mongodb_connection_string = NULL;
 static char *mongodb_database_name = NULL;
 static char *mongodb_collection_name = NULL;
@@ -41,7 +76,22 @@ module auth_mongodb_module;
 static int auth_mongodb_sess_init(void);
 static void auth_mongodb_cleanup(void);
 
-/* Configuration directive handlers */
+/* ==============================================================================
+ * CONFIGURATION DIRECTIVE HANDLERS
+ * 
+ * These functions process configuration directives from proftpd.conf.
+ * Each handler validates the directive arguments and stores values in the
+ * ProFTPD configuration tree for later retrieval during session initialization.
+ * 
+ * CHECK_ARGS: Validates correct number of arguments
+ * CHECK_CONF: Ensures directive is used in correct context (root/virtual/global)
+ * add_config_param_str/add_config_param: Stores the configuration value
+ * ============================================================================== */
+
+/**
+ * Handler: AuthMongoConnectionString
+ * Sets the MongoDB connection URI (e.g., mongodb://localhost:27017)
+ */
 MODRET set_mongodb_connection_string(cmd_rec *cmd) {
     CHECK_ARGS(cmd, 1);
     CHECK_CONF(cmd, CONF_ROOT | CONF_VIRTUAL | CONF_GLOBAL);
@@ -50,6 +100,10 @@ MODRET set_mongodb_connection_string(cmd_rec *cmd) {
     return PR_HANDLED(cmd);
 }
 
+/**
+ * Handler: AuthMongoDatabaseName
+ * Sets the database name containing the user authentication collection
+ */
 MODRET set_mongodb_database_name(cmd_rec *cmd) {
     CHECK_ARGS(cmd, 1);
     CHECK_CONF(cmd, CONF_ROOT | CONF_VIRTUAL | CONF_GLOBAL);
@@ -58,6 +112,10 @@ MODRET set_mongodb_database_name(cmd_rec *cmd) {
     return PR_HANDLED(cmd);
 }
 
+/**
+ * Handler: AuthMongoAuthCollectionName
+ * Sets the collection name where user documents are stored
+ */
 MODRET set_mongodb_collection_name(cmd_rec *cmd) {
     CHECK_ARGS(cmd, 1);
     CHECK_CONF(cmd, CONF_ROOT | CONF_VIRTUAL | CONF_GLOBAL);
@@ -122,6 +180,11 @@ MODRET set_mongodb_error_noconnection(cmd_rec *cmd) {
     return PR_HANDLED(cmd);
 }
 
+/**
+ * Handler: AuthMongoDebugLogging
+ * Enables/disables verbose debug logging for troubleshooting
+ * Accepts: on, off, true, false, yes, no
+ */
 MODRET set_mongodb_debug_logging(cmd_rec *cmd) {
     int debug_flag = FALSE;
     
@@ -137,6 +200,12 @@ MODRET set_mongodb_debug_logging(cmd_rec *cmd) {
     return PR_HANDLED(cmd);
 }
 
+/**
+ * Handler: AuthMongoPasswordHashMethod
+ * Configures the password hashing algorithm used for verification
+ * Valid methods: plain, bcrypt, crypt, sha256, sha512
+ * The method must match how passwords are stored in MongoDB
+ */
 MODRET set_mongodb_password_hash_method(cmd_rec *cmd) {
     char *method = NULL;
     int hash_method = HASH_METHOD_PLAIN;
@@ -182,7 +251,22 @@ static conftable auth_mongodb_conftab[] = {
     { NULL, NULL, NULL }
 };
 
-/* Helper function to verify password based on configured hash method */
+/* ==============================================================================
+ * PASSWORD VERIFICATION FUNCTIONS
+ * ============================================================================== */
+
+/**
+ * verify_password - Verify user password against stored hash
+ * @plain_password: Password provided by user attempting to authenticate
+ * @stored_hash: Password hash retrieved from MongoDB document
+ * 
+ * Returns: 1 if password matches, 0 if password doesn't match
+ * 
+ * This function uses the configured hash method (mongodb_password_hash_method)
+ * to verify the password. For cryptographic methods (bcrypt, crypt, sha256, sha512),
+ * the crypt() function automatically detects the hash format from the stored_hash
+ * prefix ($2b$ for bcrypt, $5$ for SHA-256, $6$ for SHA-512, etc.).
+ */
 static int verify_password(const char *plain_password, const char *stored_hash) {
     char *hashed = NULL;
     int result = 0;
@@ -245,7 +329,26 @@ static int verify_password(const char *plain_password, const char *stored_hash) 
     return result;
 }
 
-/* Helper function to query MongoDB and return user document */
+/* ==============================================================================
+ * MONGODB QUERY FUNCTIONS
+ * ============================================================================== */
+
+/**
+ * query_mongodb_user - Query MongoDB for user document by username
+ * @username: Username to search for
+ * @client_out: Output parameter - MongoDB client handle (caller must destroy)
+ * @collection_out: Output parameter - Collection handle (caller must destroy)
+ * @cursor_out: Output parameter - Query cursor handle (caller must destroy)
+ * 
+ * Returns: Pointer to BSON document if user found, NULL if not found or error
+ * 
+ * This function establishes a MongoDB connection, queries for a user document
+ * matching the username field, and returns the document. The caller is responsible
+ * for cleaning up the returned MongoDB resources (client, collection, cursor).
+ * 
+ * IMPORTANT: The returned document pointer is only valid while the cursor exists.
+ * Copy any needed data before destroying the cursor.
+ */
 static const bson_t* query_mongodb_user(const char *username, mongoc_client_t **client_out,
                                         mongoc_collection_t **collection_out,
                                         mongoc_cursor_t **cursor_out) {
@@ -370,7 +473,23 @@ static const bson_t* query_mongodb_user(const char *username, mongoc_client_t **
     return NULL;
 }
 
-/* Authentication handler: getpwnam */
+/* ==============================================================================
+ * PROFTPD AUTHENTICATION HANDLERS
+ * ============================================================================== */
+
+/**
+ * auth_mongodb_getpwnam - ProFTPD getpwnam authentication handler
+ * @cmd: Command record containing username in argv[0]
+ * 
+ * Returns: PR_DECLINED if user not found, or data structure with passwd info
+ * 
+ * This handler is called by ProFTPD to retrieve user account information.
+ * It queries MongoDB for the user document and constructs a passwd structure
+ * containing uid, gid, home directory, and other account details.
+ * 
+ * The passwd structure is allocated from session.pool and persists for the
+ * duration of the FTP session.
+ */
 MODRET auth_mongodb_getpwnam(cmd_rec *cmd) {
     const char *username = NULL;
     const bson_t *doc = NULL;
@@ -457,7 +576,19 @@ MODRET auth_mongodb_getpwnam(cmd_rec *cmd) {
     return mod_create_data(cmd, pw);
 }
 
-/* Authentication handler: auth */
+/**
+ * auth_mongodb_auth - ProFTPD password authentication handler
+ * @cmd: Command record with username in argv[0] and password in argv[1]
+ * 
+ * Returns: PR_HANDLED on successful auth, PR_ERROR_INT with PR_AUTH_BADPWD on failure
+ * 
+ * This handler verifies the user's password against the stored hash in MongoDB.
+ * It queries for the user document, extracts the password field, and calls
+ * verify_password() to check if the provided password matches.
+ * 
+ * On success, sets session.auth_mech to identify this module as the authenticator.
+ * On failure, returns appropriate error response to the FTP client.
+ */
 MODRET auth_mongodb_auth(cmd_rec *cmd) {
     const char *username = NULL;
     const char *password = NULL;
@@ -536,7 +667,22 @@ static authtable auth_mongodb_authtab[] = {
     { 0, NULL, NULL }
 };
 
-/* Session initialization */
+/* ==============================================================================
+ * MODULE LIFECYCLE FUNCTIONS
+ * ============================================================================== */
+
+/**
+ * auth_mongodb_sess_init - Session initialization callback
+ * 
+ * Returns: 0 on success
+ * 
+ * Called once per FTP session (when a client connects). This function retrieves
+ * all configuration directive values from the ProFTPD config tree and stores them
+ * in module-level static variables for use during authentication.
+ * 
+ * Configuration values are set by directives in proftpd.conf and stored in
+ * main_server->conf during ProFTPD startup.
+ */
 static int auth_mongodb_sess_init(void) {
     config_rec *c = NULL;
     
@@ -618,7 +764,15 @@ static int auth_mongodb_sess_init(void) {
     return 0;
 }
 
-/* Module initialization */
+/**
+ * auth_mongodb_init - Module initialization callback
+ * 
+ * Returns: 0 on success
+ * 
+ * Called once when ProFTPD starts up (before any sessions). Initializes the
+ * MongoDB C driver which must be done before any MongoDB operations can occur.
+ * This is a process-wide initialization.
+ */
 static int auth_mongodb_init(void) {
     /* Initialize MongoDB driver */
     mongoc_init();
@@ -628,7 +782,12 @@ static int auth_mongodb_init(void) {
     return 0;
 }
 
-/* Module cleanup */
+/**
+ * auth_mongodb_cleanup - Module cleanup callback
+ * 
+ * Called when ProFTPD shuts down. Cleans up the MongoDB C driver and releases
+ * any global resources. This is a process-wide cleanup.
+ */
 static void auth_mongodb_cleanup(void) {
     /* Cleanup MongoDB driver */
     mongoc_cleanup();
@@ -636,15 +795,21 @@ static void auth_mongodb_cleanup(void) {
     pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION ": Module cleanup complete");
 }
 
-/* Module definition */
+/* ==============================================================================
+ * MODULE DEFINITION STRUCTURE
+ * 
+ * This structure registers the module with ProFTPD and defines all hooks,
+ * handlers, and metadata. ProFTPD uses this structure to integrate the
+ * module into its authentication chain.
+ * ============================================================================== */
 module auth_mongodb_module = {
-    NULL, NULL,                     /* Always NULL */
-    0x20,                           /* API version 2.0 */
-    "auth_mongodb",                 /* Module name */
-    auth_mongodb_conftab,           /* Configuration handlers */
-    NULL,                           /* Command handlers */
-    auth_mongodb_authtab,           /* Authentication handlers */
-    auth_mongodb_init,              /* Module initialization */
-    auth_mongodb_sess_init,         /* Session initialization */
-    MOD_AUTH_MONGODB_VERSION        /* Module version */
+    NULL, NULL,                     /* Always NULL (reserved for internal use) */
+    0x20,                           /* API version 2.0 (ProFTPD module API) */
+    "auth_mongodb",                 /* Module name (used in logs and directives) */
+    auth_mongodb_conftab,           /* Configuration directive handlers */
+    NULL,                           /* Command handlers (FTP commands - not used) */
+    auth_mongodb_authtab,           /* Authentication handlers (getpwnam, auth) */
+    auth_mongodb_init,              /* Module initialization (called at startup) */
+    auth_mongodb_sess_init,         /* Session initialization (called per connection) */
+    MOD_AUTH_MONGODB_VERSION        /* Module version string */
 };
