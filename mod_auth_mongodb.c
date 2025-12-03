@@ -1240,9 +1240,5 @@ module auth_mongodb_module = {
     NULL,                           /* Command handlers (FTP commands - not used) */
     auth_mongodb_authtab,           /* Authentication handlers (getpwnam, auth) */
     auth_mongodb_init,              /* Module initialization (called at startup) */
-    auth_mongodb_sess_init,         /* Session initialization (called per connection) */
-    MOD_AUTH_MONGODB_VERSION,       /* Module version string */
-    NULL,                           /* Session cleanup (not used) */
-    NULL,                           /* Module cleanup - not using cleanup callback */
-    NULL                            /* Module handle (reserved) */
+    auth_mongodb_sess_init          /* Session initialization (called per connection) */
 };
