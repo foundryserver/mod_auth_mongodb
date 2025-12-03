@@ -1,0 +1,278 @@
+# ============================================================================
+# ProFTPD Configuration with MongoDB Authentication Module
+# ============================================================================
+#
+# This configuration demonstrates MongoDB-based authentication with user
+# jailing (chroot) to their home directory using their own uid/gid.
+#
+# PREREQUISITES:
+# 1. ProFTPD compiled with --enable-dso
+# 2. mod_auth_mongodb.so installed in libexec directory
+# 3. MongoDB server accessible with user collection set up
+# 4. User home directories created with proper ownership
+#
+# QUICK START:
+# 1. Replace MongoDB connection string with your actual values
+# 2. Adjust field names if your MongoDB schema differs
+# 3. Create user home directories: mkdir -p /home/username
+# 4. Set ownership: chown username:groupname /home/username
+# 5. Test configuration: proftpd -t -c /etc/proftpd/proftpd.conf
+# 6. Restart: systemctl restart proftpd
+
+# ============================================================================
+# BASIC SERVER CONFIGURATION
+# ============================================================================
+
+# Server identity shown to clients
+ServerName                      "ProFTPD with MongoDB Auth"
+
+# Run as standalone daemon (not from inetd)
+ServerType                      standalone
+
+# This is the primary/default server
+DefaultServer                   on
+
+# FTP control port (21 is standard FTP)
+Port                            21
+
+# Default file creation mask (files created as 644, dirs as 755)
+Umask                           022
+
+# Maximum number of simultaneous connections
+MaxInstances                    30
+
+# User/group for main daemon process (NOT for authenticated users)
+# The daemon drops privileges after binding to port 21
+User                            proftpd
+Group                           proftpd
+
+# ============================================================================
+# LOGGING CONFIGURATION
+# ============================================================================
+
+# System log for errors, auth failures, debugging
+SystemLog                       /var/log/proftpd/system.log
+
+# Transfer log for file upload/download activity
+TransferLog                     /var/log/proftpd/xferlog
+
+# ============================================================================
+# MONGODB AUTHENTICATION MODULE
+# ============================================================================
+
+# Load the MongoDB authentication module (must be first!)
+LoadModule                      mod_auth_mongodb.c
+
+# --- MongoDB Connection Settings ---
+
+# Full MongoDB connection URI (supports replica sets, auth, timeouts)
+# Format: mongodb://[username:password@]host1[:port1][,host2[:port2],...][/[defaultauthdb][?options]]
+# REQUIRED: Replace with your actual MongoDB credentials and hosts
+AuthMongoConnectionString       "mongodb://username:password@mongo1.vm.lan:27017,mongo2.vm.lan:27017,mongo3.vm.lan:27017/?retryWrites=true&replicaSet=rs0&readPreference=primary&serverSelectionTimeoutMS=5000&connectTimeoutMS=10000&authSource=admin&authMechanism=SCRAM-SHA-256"
+
+# Database name containing user collection
+# REQUIRED: Replace with your database name
+AuthMongoDatabaseName           "authentication"
+
+# Collection name containing user documents
+# REQUIRED: Replace with your collection name
+AuthMongoAuthCollectionName     "users"
+
+# --- MongoDB Document Field Mappings ---
+# These specify which fields in your MongoDB documents contain user data
+# Adjust these if your schema uses different field names
+
+# Field containing the username (used for login)
+AuthMongoDocumentFieldUsername  "username"
+
+# Field containing the password (plain text)
+AuthMongoDocumentFieldPassword  "password"
+
+# Field containing the user ID (stored as string, e.g., "1001")
+AuthMongoDocumentFieldUid       "uid"
+
+# Field containing the group ID (stored as string, e.g., "1001")
+AuthMongoDocumentFieldGid       "gid"
+
+# Field containing the home directory path (e.g., "/home/testuser")
+AuthMongoDocumentFieldPath      "home_directory"
+
+# --- Error Messages ---
+# Custom messages shown to clients on authentication failure
+
+# Message shown when username/password is incorrect or user not found
+AuthMongoNoAuthString           "Your username/password is incorrect"
+
+# Message shown when MongoDB connection fails
+AuthMongoNoConnectionString     "Failed to connect to Authentication Server"
+
+# --- Password Hashing ---
+
+# Password hash method used in MongoDB
+# Options: plain, bcrypt, crypt, sha256, sha512
+# - plain: Plain text passwords (NOT RECOMMENDED for production)
+# - bcrypt: bcrypt hashes (e.g., $2b$10$...) - RECOMMENDED
+# - crypt: Traditional Unix crypt (DES, MD5)
+# - sha256: SHA-256 crypt (e.g., $5$...)
+# - sha512: SHA-512 crypt (e.g., $6$...)
+# The module auto-detects the hash format from the stored hash
+AuthMongoPasswordHashMethod     bcrypt
+
+# --- Debug Settings ---
+
+# Enable verbose logging for troubleshooting (yes/no)
+# Set to "no" in production for better performance
+AuthMongoDebugLogging           yes
+
+# ============================================================================
+# AUTHENTICATION CONFIGURATION
+# ============================================================================
+
+# Use ONLY MongoDB for authentication (skip system /etc/passwd)
+# This ensures all users come from MongoDB
+AuthOrder                       mod_auth_mongodb.c
+
+# ============================================================================
+# SECURITY: USER JAILING (CHROOT)
+# ============================================================================
+
+# Jail all users to their home directory
+# The ~ means each user's home directory (from AuthMongoDocumentFieldPath)
+# Users cannot navigate above their home directory - they see it as /
+DefaultRoot                     ~
+
+# ============================================================================
+# DIRECTORY PERMISSIONS
+# ============================================================================
+
+# Root directory - deny all access by default
+<Directory />
+    AllowOverwrite              on
+    
+    # Deny all operations at root level
+    <Limit ALL>
+        DenyAll
+    </Limit>
+</Directory>
+
+# User home directories - allow full access
+<Directory ~>
+    # Allow all operations within user's home directory
+    <Limit ALL>
+        AllowAll
+    </Limit>
+</Directory>
+
+# ============================================================================
+# SFTP CONFIGURATION (Optional - requires mod_sftp)
+# ============================================================================
+
+<IfModule mod_sftp.c>
+    # Enable SFTP engine
+    SFTPEngine                  on
+    
+    # SFTP port (2222 is common, 22 conflicts with system SSH)
+    Port                        2222
+    
+    # SFTP-specific transfer log
+    SFTPLog                     /var/log/proftpd/sftp.log
+    
+    # --- SFTP Host Keys ---
+    # Generate these with: ssh-keygen -t rsa -f /etc/proftpd/ssh_host_rsa_key -N ""
+    # You need at least one host key for SFTP to work
+    SFTPHostKey                 /etc/proftpd/ssh_host_rsa_key
+    SFTPHostKey                 /etc/proftpd/ssh_host_ecdsa_key
+    
+    # SFTP authentication method (password from MongoDB)
+    SFTPAuthMethods             password
+    
+    # Use MongoDB for SFTP authentication (same as FTP)
+    AuthOrder                   mod_auth_mongodb.c
+    
+    # Jail SFTP users to their home directory (same as FTP)
+    DefaultRoot                 ~
+</IfModule>
+
+# ============================================================================
+# MONGODB DOCUMENT SCHEMA REFERENCE
+# ============================================================================
+#
+# Your MongoDB collection should contain documents like this:
+#
+# WITH BCRYPT (Recommended):
+# {
+#   "_id": ObjectId("674f1234567890abcdef1234"),
+#   "username": "testuser",
+#   "password": "$2b$10$N9qo8uLOickgx2ZMRZoMye.Ik3JSk5U5p7L6Km1hp7RmWfXfGOIJy",
+#   "uid": "1001",
+#   "gid": "1001", 
+#   "home_directory": "/home/testuser"
+# }
+#
+# WITH PLAIN TEXT (Not Recommended):
+# {
+#   "_id": ObjectId("674f1234567890abcdef1234"),
+#   "username": "testuser",
+#   "password": "testpassword",
+#   "uid": "1001",
+#   "gid": "1001", 
+#   "home_directory": "/home/testuser"
+# }
+#
+# IMPORTANT NOTES:
+# - All fields are REQUIRED (authentication fails if any are missing)
+# - "username" must be unique
+# - "password" format depends on AuthMongoPasswordHashMethod:
+#   * plain: Plain text password string
+#   * bcrypt: bcrypt hash starting with $2a$, $2b$, or $2y$ (from Node.js bcrypt)
+#   * sha512: SHA-512 crypt hash starting with $6$
+#   * sha256: SHA-256 crypt hash starting with $5$
+#   * crypt: Traditional Unix crypt hash
+# - "uid" and "gid" are STRINGS (will be converted to integers)
+# - "home_directory" must be an absolute path
+# - The directory must exist with proper ownership before user can login
+#
+# GENERATE PASSWORD HASHES:
+# 
+# For bcrypt (using Node.js):
+#   const bcrypt = require('bcrypt');
+#   const salt = await bcrypt.genSalt(10);
+#   const hash = await bcrypt.hash('yourpassword', salt);
+#   console.log(hash);
+#
+# For SHA-512 (using command line):
+#   mkpasswd -m sha-512 yourpassword
+#
+# For SHA-256 (using command line):
+#   mkpasswd -m sha-256 yourpassword
+#
+# CREATE USER HOME DIRECTORIES:
+# For each user, run:
+#   sudo mkdir -p /home/testuser
+#   sudo chown 1001:1001 /home/testuser
+#   sudo chmod 755 /home/testuser
+#
+# ============================================================================
+# TESTING YOUR CONFIGURATION
+# ============================================================================
+#
+# 1. Check syntax:
+#    proftpd -t -c /etc/proftpd/proftpd.conf
+#
+# 2. Test with debug logging enabled (see AuthMongoDebugLogging above)
+#
+# 3. Monitor logs while testing:
+#    tail -f /var/log/proftpd/system.log
+#
+# 4. Test FTP connection:
+#    ftp localhost
+#    (enter username and password from MongoDB)
+#
+# 5. Test SFTP connection:
+#    sftp -P 2222 testuser@localhost
+#
+# 6. Verify user is jailed:
+#    Once connected, try: cd /
+#    You should see only the contents of the user's home directory
+#
+# ============================================================================
