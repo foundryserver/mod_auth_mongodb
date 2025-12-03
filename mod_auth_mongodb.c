@@ -37,8 +37,10 @@
 #include <bson/bson.h>
 #include <crypt.h>
 #include <string.h>
+#include <errno.h>
+#include <sys/time.h>
 
-#define MOD_AUTH_MONGODB_VERSION "mod_auth_mongodb/1.0"
+#define MOD_AUTH_MONGODB_VERSION "mod_auth_mongodb/1.1"
 
 /* Password hash methods - determines how stored passwords are verified
  * PLAIN:   Direct string comparison (insecure, for testing only)
@@ -70,11 +72,42 @@ static char *mongodb_error_noconnection = NULL;
 static int mongodb_debug_logging = FALSE;
 static int mongodb_password_hash_method = HASH_METHOD_PLAIN;
 
+/* MongoDB connection pool for reusing connections across authentication requests.
+ * This significantly improves performance by avoiding connection overhead.
+ */
+static mongoc_client_pool_t *mongodb_client_pool = NULL;
+
+/* Query result cache - prevents duplicate MongoDB queries for same user
+ * during authentication flow (getpwnam + auth both query for same user)
+ */
+#define USER_CACHE_TTL_SECONDS 5
+#define USER_CACHE_USERNAME_MAX 256
+#define USER_CACHE_PASSWORD_MAX 512
+#define USER_CACHE_PATH_MAX 1024
+
+typedef struct {
+    char username[USER_CACHE_USERNAME_MAX];
+    char password_hash[USER_CACHE_PASSWORD_MAX];
+    uid_t uid;
+    gid_t gid;
+    char home_dir[USER_CACHE_PATH_MAX];
+    struct timeval cached_at;
+    int valid;
+} user_cache_entry_t;
+
+static user_cache_entry_t user_cache = {0};
+
 module auth_mongodb_module;
 
 /* Forward declarations */
 static int auth_mongodb_sess_init(void);
 static void auth_mongodb_cleanup(void);
+static int parse_uid_gid(const char *str, unsigned long *out, const char *field_name);
+static int validate_mongodb_configuration(void);
+static int is_cache_valid(const char *username);
+static void cache_user_data(const char *username, const char *password_hash,
+                           uid_t uid, gid_t gid, const char *home_dir);
+static void invalidate_cache(void);
 
 /* ==============================================================================
  * CONFIGURATION DIRECTIVE HANDLERS
@@ -252,11 +285,155 @@ static conftable auth_mongodb_conftab[] = {
 };
 
 /* ==============================================================================
+ * QUERY CACHE FUNCTIONS
+ * 
+ * These functions manage a simple cache to avoid duplicate MongoDB queries
+ * during authentication. ProFTPD calls getpwnam() followed by auth() for the
+ * same user, which would normally result in 2 identical queries.
+ * ============================================================================== */
+
+/**
+ * is_cache_valid - Check if cached user data is valid and fresh
+ * @username: Username to check in cache
+ * 
+ * Returns: 1 if cache hit and fresh, 0 if cache miss or expired
+ * 
+ * Cache entries are valid for USER_CACHE_TTL_SECONDS to balance performance
+ * and security (ensures recent password changes are detected).
+ */
+static int is_cache_valid(const char *username) {
+    struct timeval now;
+    long elapsed_usec;
+    
+    if (!user_cache.valid || !username) {
+        return 0;
+    }
+    
+    if (strcmp(user_cache.username, username) != 0) {
+        return 0;  /* Different user */
+    }
+    
+    gettimeofday(&now, NULL);
+    elapsed_usec = (now.tv_sec - user_cache.cached_at.tv_sec) * 1000000L +
+                   (now.tv_usec - user_cache.cached_at.tv_usec);
+    
+    if (elapsed_usec > (USER_CACHE_TTL_SECONDS * 1000000L)) {
+        if (mongodb_debug_logging) {
+            pr_log_pri(PR_LOG_DEBUG, MOD_AUTH_MONGODB_VERSION 
+                       ": Cache expired for user '%s' (age: %.1fs)", 
+                       username, elapsed_usec / 1000000.0);
+        }
+        return 0;  /* Expired */
+    }
+    
+    if (mongodb_debug_logging) {
+        pr_log_pri(PR_LOG_DEBUG, MOD_AUTH_MONGODB_VERSION 
+                   ": Cache hit for user '%s' (age: %.1fs)", 
+                   username, elapsed_usec / 1000000.0);
+    }
+    
+    return 1;
+}
+
+/**
+ * cache_user_data - Store user data in cache
+ * @username: Username to cache
+ * @password_hash: Password hash to cache
+ * @uid: User ID
+ * @gid: Group ID
+ * @home_dir: Home directory path
+ * 
+ * Stores user data with current timestamp. Cache is automatically invalidated
+ * after USER_CACHE_TTL_SECONDS.
+ */
+static void cache_user_data(const char *username, const char *password_hash,
+                           uid_t uid, gid_t gid, const char *home_dir) {
+    if (!username || !password_hash || !home_dir) {
+        return;
+    }
+    
+    /* Copy data safely with bounds checking */
+    strncpy(user_cache.username, username, USER_CACHE_USERNAME_MAX - 1);
+    user_cache.username[USER_CACHE_USERNAME_MAX - 1] = '\0';
+    
+    strncpy(user_cache.password_hash, password_hash, USER_CACHE_PASSWORD_MAX - 1);
+    user_cache.password_hash[USER_CACHE_PASSWORD_MAX - 1] = '\0';
+    
+    strncpy(user_cache.home_dir, home_dir, USER_CACHE_PATH_MAX - 1);
+    user_cache.home_dir[USER_CACHE_PATH_MAX - 1] = '\0';
+    
+    user_cache.uid = uid;
+    user_cache.gid = gid;
+    gettimeofday(&user_cache.cached_at, NULL);
+    user_cache.valid = 1;
+    
+    if (mongodb_debug_logging) {
+        pr_log_pri(PR_LOG_DEBUG, MOD_AUTH_MONGODB_VERSION 
+                   ": Cached user data for '%s' (ttl: %ds)", 
+                   username, USER_CACHE_TTL_SECONDS);
+    }
+}
+
+/**
+ * invalidate_cache - Clear the user cache
+ * 
+ * Called when authentication fails or on session cleanup to prevent
+ * information leakage across sessions.
+ */
+static void invalidate_cache(void) {
+    memset(&user_cache, 0, sizeof(user_cache));
+    user_cache.valid = 0;
+}
+
+/* ==============================================================================
  * PASSWORD VERIFICATION FUNCTIONS
  * ============================================================================== */
 
 /**
- * verify_password - Verify user password against stored hash
+ * parse_uid_gid - Safely parse string to unsigned integer with validation
+ * @str: String to parse
+ * @out: Output parameter for parsed value
+ * @field_name: Field name for error messages
+ * 
+ * Returns: 0 on success, -1 on error
+ * 
+ * This function safely converts string representations of uid/gid to integers,
+ * with proper error checking to prevent invalid values (especially uid 0/root).
+ */
+static int parse_uid_gid(const char *str, unsigned long *out, const char *field_name) {
+    char *endptr = NULL;
+    long val;
+    
+    if (!str || !out || !field_name) {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": Invalid parameters to parse_uid_gid");
+        return -1;
+    }
+    
+    errno = 0;
+    val = strtol(str, &endptr, 10);
+    
+    /* Check for conversion errors */
+    if (errno != 0 || *endptr != '\0' || endptr == str) {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": Invalid %s value '%s': not a valid number", field_name, str);
+        return -1;
+    }
+    
+    /* Check range - must be positive and within system limits */
+    if (val < 1 || val > UINT_MAX) {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": Invalid %s value '%s': out of range (must be 1-%u)", 
+                   field_name, str, UINT_MAX);
+        return -1;
+    }
+    
+    *out = (unsigned long)val;
+    return 0;
+}
+
+/**
+ * verify_password - Verify user password against stored hash (thread-safe)
  * @plain_password: Password provided by user attempting to authenticate
  * @stored_hash: Password hash retrieved from MongoDB document
  * 
@@ -264,8 +441,11 @@ static conftable auth_mongodb_conftab[] = {
  * 
  * This function uses the configured hash method (mongodb_password_hash_method)
  * to verify the password. For cryptographic methods (bcrypt, crypt, sha256, sha512),
- * the crypt() function automatically detects the hash format from the stored_hash
- * prefix ($2b$ for bcrypt, $5$ for SHA-256, $6$ for SHA-512, etc.).
+ * the crypt_r() function (thread-safe) automatically detects the hash format from
+ * the stored_hash prefix ($2b$ for bcrypt, $5$ for SHA-256, $6$ for SHA-512, etc.).
+ * 
+ * SECURITY: Uses thread-safe crypt_r() to prevent race conditions during concurrent
+ * authentication attempts.
  */
 static int verify_password(const char *plain_password, const char *stored_hash) {
     char *hashed = NULL;
@@ -273,7 +453,7 @@ static int verify_password(const char *plain_password, const char *stored_hash) 
     
     switch (mongodb_password_hash_method) {
         case HASH_METHOD_PLAIN:
-            /* Plain text comparison */
+            /* Plain text comparison - WARNING: NOT SECURE, for testing only */
             result = (strcmp(plain_password, stored_hash) == 0);
             if (mongodb_debug_logging) {
                 pr_log_pri(PR_LOG_DEBUG, MOD_AUTH_MONGODB_VERSION 
@@ -286,13 +466,24 @@ static int verify_password(const char *plain_password, const char *stored_hash) 
         case HASH_METHOD_CRYPT:
         case HASH_METHOD_SHA256:
         case HASH_METHOD_SHA512:
-            /* Use crypt() for bcrypt, traditional crypt, and SHA variants */
+            /* Use crypt_r() for thread-safe password hashing */
             /* The hash format is detected automatically from the stored hash */
             /* bcrypt: $2b$10$... or $2y$10$... */
             /* SHA-256: $5$... */
             /* SHA-512: $6$... */
             /* DES/MD5 crypt: other formats */
+#if defined(_GNU_SOURCE) || defined(__linux__)
+            /* Thread-safe version available on Linux/GNU systems */
+            struct crypt_data data;
+            data.initialized = 0;
+            hashed = crypt_r(plain_password, stored_hash, &data);
+#else
+            /* Fallback to non-thread-safe version on other platforms */
+            /* WARNING: This may cause race conditions with concurrent logins */
+            pr_log_pri(PR_LOG_WARNING, MOD_AUTH_MONGODB_VERSION 
+                       ": Using non-thread-safe crypt() - consider upgrading to Linux");
             hashed = crypt(plain_password, stored_hash);
+#endif
             if (hashed == NULL) {
                 pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
                            ": crypt() failed for password verification");
@@ -352,7 +543,6 @@ static int verify_password(const char *plain_password, const char *stored_hash) 
 static const bson_t* query_mongodb_user(const char *username, mongoc_client_t **client_out,
                                         mongoc_collection_t **collection_out,
                                         mongoc_cursor_t **cursor_out) {
-    mongoc_uri_t *uri = NULL;
     mongoc_client_t *client = NULL;
     mongoc_database_t *database = NULL;
     mongoc_collection_t *collection = NULL;
@@ -369,31 +559,26 @@ static const bson_t* query_mongodb_user(const char *username, mongoc_client_t **
         return NULL;
     }
     
-    /* Parse MongoDB URI */
-    uri = mongoc_uri_new_with_error(mongodb_connection_string, &error);
-    if (!uri) {
+    /* Check if connection pool is initialized */
+    if (!mongodb_client_pool) {
         pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
-                   ": Failed to parse MongoDB URI: %s", error.message);
+                   ": MongoDB connection pool not initialized");
         if (mongodb_error_noconnection) {
             pr_response_add_err(R_530, "%s", mongodb_error_noconnection);
         }
         return NULL;
     }
     
-    /* Create MongoDB client */
-    client = mongoc_client_new_from_uri(uri);
+    /* Get client from connection pool (reuses existing connections) */
+    client = mongoc_client_pool_pop(mongodb_client_pool);
     if (!client) {
         pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
-                   ": Failed to create MongoDB client");
-        mongoc_uri_destroy(uri);
+                   ": Failed to get MongoDB client from pool");
         if (mongodb_error_noconnection) {
             pr_response_add_err(R_530, "%s", mongodb_error_noconnection);
         }
         return NULL;
     }
-    mongoc_uri_destroy(uri);
-    
-    mongoc_client_set_error_api(client, 2);
     
     if (mongodb_debug_logging) {
         pr_log_pri(PR_LOG_DEBUG, MOD_AUTH_MONGODB_VERSION 
@@ -469,7 +654,8 @@ static const bson_t* query_mongodb_user(const char *username, mongoc_client_t **
     
     mongoc_cursor_destroy(cursor);
     mongoc_collection_destroy(collection);
-    mongoc_client_destroy(client);
+    /* Return client to pool instead of destroying it */
+    mongoc_client_pool_push(mongodb_client_pool, client);
     return NULL;
 }
 
@@ -501,6 +687,7 @@ MODRET auth_mongodb_getpwnam(cmd_rec *cmd) {
     const char *uid_str = NULL;
     const char *gid_str = NULL;
     const char *path_str = NULL;
+    const char *password_str = NULL;
     uid_t uid = 0;
     gid_t gid = 0;
     
@@ -511,51 +698,173 @@ MODRET auth_mongodb_getpwnam(cmd_rec *cmd) {
                    ": getpwnam called for user '%s'", username);
     }
     
-    /* Query MongoDB */
+    /* Check cache first - avoid duplicate MongoDB query */
+    if (is_cache_valid(username)) {
+        /* Use cached data */
+        pw = pcalloc(session.pool, sizeof(struct passwd));
+        pw->pw_name = pstrdup(session.pool, user_cache.username);
+        pw->pw_uid = user_cache.uid;
+        pw->pw_gid = user_cache.gid;
+        pw->pw_dir = pstrdup(session.pool, user_cache.home_dir);
+        pw->pw_shell = pstrdup(session.pool, "/bin/false");
+        pw->pw_passwd = pstrdup(session.pool, "x");
+        pw->pw_gecos = pstrdup(session.pool, "");
+        
+        if (mongodb_debug_logging) {
+            pr_log_pri(PR_LOG_DEBUG, MOD_AUTH_MONGODB_VERSION 
+                       ": Using cached data for user '%s'", username);
+        }
+        
+        return mod_create_data(cmd, pw);
+    }
+    
+    /* Cache miss - query MongoDB */
     doc = query_mongodb_user(username, &client, &collection, &cursor);
     if (!doc) {
         return PR_DECLINED(cmd);
     }
     
-    /* Extract uid field */
+    /* Extract uid field with type checking and safe parsing */
     if (!bson_iter_init_find(&iter, doc, mongodb_field_uid)) {
         pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
                    ": Missing uid field '%s' in user document", mongodb_field_uid);
         mongoc_cursor_destroy(cursor);
         mongoc_collection_destroy(collection);
-        mongoc_client_destroy(client);
+        mongoc_client_pool_push(mongodb_client_pool, client);
         return PR_DECLINED(cmd);
     }
-    uid_str = bson_iter_utf8(&iter, NULL);
-    uid = (uid_t)atoi(uid_str);
     
-    /* Extract gid field */
+    /* Handle both string and numeric BSON types for uid */
+    if (BSON_ITER_HOLDS_UTF8(&iter)) {
+        unsigned long uid_val;
+        uid_str = bson_iter_utf8(&iter, NULL);
+        if (parse_uid_gid(uid_str, &uid_val, "uid") != 0) {
+            mongoc_cursor_destroy(cursor);
+            mongoc_collection_destroy(collection);
+            mongoc_client_pool_push(mongodb_client_pool, client);
+            return PR_DECLINED(cmd);
+        }
+        uid = (uid_t)uid_val;
+    } else if (BSON_ITER_HOLDS_INT32(&iter)) {
+        int32_t uid_val = bson_iter_int32(&iter);
+        if (uid_val < 1) {
+            pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                       ": Invalid uid value %d: must be >= 1", uid_val);
+            mongoc_cursor_destroy(cursor);
+            mongoc_collection_destroy(collection);
+            mongoc_client_pool_push(mongodb_client_pool, client);
+            return PR_DECLINED(cmd);
+        }
+        uid = (uid_t)uid_val;
+    } else if (BSON_ITER_HOLDS_INT64(&iter)) {
+        int64_t uid_val = bson_iter_int64(&iter);
+        if (uid_val < 1 || uid_val > UINT_MAX) {
+            pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                       ": Invalid uid value %lld: out of range", (long long)uid_val);
+            mongoc_cursor_destroy(cursor);
+            mongoc_collection_destroy(collection);
+            mongoc_client_pool_push(mongodb_client_pool, client);
+            return PR_DECLINED(cmd);
+        }
+        uid = (uid_t)uid_val;
+    } else {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": Invalid uid field type (expected string or integer)");
+        mongoc_cursor_destroy(cursor);
+        mongoc_collection_destroy(collection);
+        mongoc_client_pool_push(mongodb_client_pool, client);
+        return PR_DECLINED(cmd);
+    }
+    
+    /* Extract gid field with type checking and safe parsing */
     if (!bson_iter_init_find(&iter, doc, mongodb_field_gid)) {
         pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
                    ": Missing gid field '%s' in user document", mongodb_field_gid);
         mongoc_cursor_destroy(cursor);
         mongoc_collection_destroy(collection);
-        mongoc_client_destroy(client);
+        mongoc_client_pool_push(mongodb_client_pool, client);
         return PR_DECLINED(cmd);
     }
-    gid_str = bson_iter_utf8(&iter, NULL);
-    gid = (gid_t)atoi(gid_str);
     
-    /* Extract path field */
+    /* Handle both string and numeric BSON types for gid */
+    if (BSON_ITER_HOLDS_UTF8(&iter)) {
+        unsigned long gid_val;
+        gid_str = bson_iter_utf8(&iter, NULL);
+        if (parse_uid_gid(gid_str, &gid_val, "gid") != 0) {
+            mongoc_cursor_destroy(cursor);
+            mongoc_collection_destroy(collection);
+            mongoc_client_pool_push(mongodb_client_pool, client);
+            return PR_DECLINED(cmd);
+        }
+        gid = (gid_t)gid_val;
+    } else if (BSON_ITER_HOLDS_INT32(&iter)) {
+        int32_t gid_val = bson_iter_int32(&iter);
+        if (gid_val < 1) {
+            pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                       ": Invalid gid value %d: must be >= 1", gid_val);
+            mongoc_cursor_destroy(cursor);
+            mongoc_collection_destroy(collection);
+            mongoc_client_pool_push(mongodb_client_pool, client);
+            return PR_DECLINED(cmd);
+        }
+        gid = (gid_t)gid_val;
+    } else if (BSON_ITER_HOLDS_INT64(&iter)) {
+        int64_t gid_val = bson_iter_int64(&iter);
+        if (gid_val < 1 || gid_val > UINT_MAX) {
+            pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                       ": Invalid gid value %lld: out of range", (long long)gid_val);
+            mongoc_cursor_destroy(cursor);
+            mongoc_collection_destroy(collection);
+            mongoc_client_pool_push(mongodb_client_pool, client);
+            return PR_DECLINED(cmd);
+        }
+        gid = (gid_t)gid_val;
+    } else {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": Invalid gid field type (expected string or integer)");
+        mongoc_cursor_destroy(cursor);
+        mongoc_collection_destroy(collection);
+        mongoc_client_pool_push(mongodb_client_pool, client);
+        return PR_DECLINED(cmd);
+    }
+    
+    /* Extract path field with type checking */
     if (!bson_iter_init_find(&iter, doc, mongodb_field_path)) {
         pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
                    ": Missing path field '%s' in user document", mongodb_field_path);
         mongoc_cursor_destroy(cursor);
         mongoc_collection_destroy(collection);
-        mongoc_client_destroy(client);
+        mongoc_client_pool_push(mongodb_client_pool, client);
+        return PR_DECLINED(cmd);
+    }
+    
+    if (!BSON_ITER_HOLDS_UTF8(&iter)) {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": Invalid path field type (expected string)");
+        mongoc_cursor_destroy(cursor);
+        mongoc_collection_destroy(collection);
+        mongoc_client_pool_push(mongodb_client_pool, client);
         return PR_DECLINED(cmd);
     }
     path_str = bson_iter_utf8(&iter, NULL);
     
+    /* Extract password field for caching (but don't log it) */
+    password_str = NULL;
+    if (bson_iter_init_find(&iter, doc, mongodb_field_password)) {
+        if (BSON_ITER_HOLDS_UTF8(&iter)) {
+            password_str = bson_iter_utf8(&iter, NULL);
+        }
+    }
+    
     if (mongodb_debug_logging) {
         pr_log_pri(PR_LOG_DEBUG, MOD_AUTH_MONGODB_VERSION 
-                   ": User '%s' - uid=%s, gid=%s, path=%s", 
-                   username, uid_str, gid_str, path_str);
+                   ": User '%s' - uid=%d, gid=%d, path=%s", 
+                   username, (int)uid, (int)gid, path_str);
+    }
+    
+    /* Cache user data to avoid duplicate query in auth() */
+    if (password_str) {
+        cache_user_data(username, password_str, uid, gid, path_str);
     }
     
     /* Create passwd structure */
@@ -568,10 +877,10 @@ MODRET auth_mongodb_getpwnam(cmd_rec *cmd) {
     pw->pw_passwd = pstrdup(session.pool, "x");
     pw->pw_gecos = pstrdup(session.pool, "");
     
-    /* Cleanup MongoDB resources */
+    /* Cleanup MongoDB resources and return client to pool */
     mongoc_cursor_destroy(cursor);
     mongoc_collection_destroy(collection);
-    mongoc_client_destroy(client);
+    mongoc_client_pool_push(mongodb_client_pool, client);
     
     return mod_create_data(cmd, pw);
 }
@@ -598,6 +907,7 @@ MODRET auth_mongodb_auth(cmd_rec *cmd) {
     mongoc_cursor_t *cursor = NULL;
     bson_iter_t iter;
     const char *stored_password = NULL;
+    int using_cache = 0;
     
     username = cmd->argv[0];
     password = cmd->argv[1];
@@ -607,29 +917,55 @@ MODRET auth_mongodb_auth(cmd_rec *cmd) {
                    ": auth called for user '%s'", username);
     }
     
-    /* Query MongoDB */
-    doc = query_mongodb_user(username, &client, &collection, &cursor);
-    if (!doc) {
-        if (mongodb_error_noauth) {
-            pr_response_add_err(R_530, "%s", mongodb_error_noauth);
+    /* Check cache first - avoid duplicate MongoDB query */
+    if (is_cache_valid(username)) {
+        stored_password = user_cache.password_hash;
+        using_cache = 1;
+        
+        if (mongodb_debug_logging) {
+            pr_log_pri(PR_LOG_DEBUG, MOD_AUTH_MONGODB_VERSION 
+                       ": Using cached password hash for user '%s'", username);
         }
-        return PR_ERROR_INT(cmd, PR_AUTH_BADPWD);
-    }
-    
-    /* Extract password field */
-    if (!bson_iter_init_find(&iter, doc, mongodb_field_password)) {
-        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
-                   ": Missing password field '%s' in user document", 
-                   mongodb_field_password);
-        mongoc_cursor_destroy(cursor);
-        mongoc_collection_destroy(collection);
-        mongoc_client_destroy(client);
-        if (mongodb_error_noauth) {
-            pr_response_add_err(R_530, "%s", mongodb_error_noauth);
+    } else {
+        /* Cache miss - query MongoDB */
+        doc = query_mongodb_user(username, &client, &collection, &cursor);
+        if (!doc) {
+            invalidate_cache();  /* Ensure stale cache doesn't persist */
+            if (mongodb_error_noauth) {
+                pr_response_add_err(R_530, "%s", mongodb_error_noauth);
+            }
+            return PR_ERROR_INT(cmd, PR_AUTH_BADPWD);
         }
-        return PR_ERROR_INT(cmd, PR_AUTH_BADPWD);
+        
+        /* Extract password field with type checking */
+        if (!bson_iter_init_find(&iter, doc, mongodb_field_password)) {
+            pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                       ": Missing password field '%s' in user document", 
+                       mongodb_field_password);
+            mongoc_cursor_destroy(cursor);
+            mongoc_collection_destroy(collection);
+            mongoc_client_pool_push(mongodb_client_pool, client);
+            invalidate_cache();
+            if (mongodb_error_noauth) {
+                pr_response_add_err(R_530, "%s", mongodb_error_noauth);
+            }
+            return PR_ERROR_INT(cmd, PR_AUTH_BADPWD);
+        }
+        
+        if (!BSON_ITER_HOLDS_UTF8(&iter)) {
+            pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                       ": Invalid password field type (expected string)");
+            mongoc_cursor_destroy(cursor);
+            mongoc_collection_destroy(collection);
+            mongoc_client_pool_push(mongodb_client_pool, client);
+            invalidate_cache();
+            if (mongodb_error_noauth) {
+                pr_response_add_err(R_530, "%s", mongodb_error_noauth);
+            }
+            return PR_ERROR_INT(cmd, PR_AUTH_BADPWD);
+        }
+        stored_password = bson_iter_utf8(&iter, NULL);
     }
-    stored_password = bson_iter_utf8(&iter, NULL);
     
     /* Verify password using configured hash method */
     if (!verify_password(password, stored_password)) {
@@ -637,9 +973,17 @@ MODRET auth_mongodb_auth(cmd_rec *cmd) {
             pr_log_pri(PR_LOG_DEBUG, MOD_AUTH_MONGODB_VERSION 
                        ": Password verification failed for user '%s'", username);
         }
-        mongoc_cursor_destroy(cursor);
-        mongoc_collection_destroy(collection);
-        mongoc_client_destroy(client);
+        
+        /* Clean up MongoDB resources if we queried */
+        if (!using_cache) {
+            mongoc_cursor_destroy(cursor);
+            mongoc_collection_destroy(collection);
+            mongoc_client_pool_push(mongodb_client_pool, client);
+        }
+        
+        /* Invalidate cache on auth failure for security */
+        invalidate_cache();
+        
         if (mongodb_error_noauth) {
             pr_response_add_err(R_530, "%s", mongodb_error_noauth);
         }
@@ -651,10 +995,12 @@ MODRET auth_mongodb_auth(cmd_rec *cmd) {
                    ": Authentication successful for user '%s'", username);
     }
     
-    /* Cleanup MongoDB resources */
-    mongoc_cursor_destroy(cursor);
-    mongoc_collection_destroy(collection);
-    mongoc_client_destroy(client);
+    /* Cleanup MongoDB resources and return client to pool (if we queried) */
+    if (!using_cache) {
+        mongoc_cursor_destroy(cursor);
+        mongoc_collection_destroy(collection);
+        mongoc_client_pool_push(mongodb_client_pool, client);
+    }
     
     session.auth_mech = MOD_AUTH_MONGODB_VERSION;
     return PR_HANDLED(cmd);
@@ -747,6 +1093,51 @@ static int auth_mongodb_sess_init(void) {
         mongodb_password_hash_method = *((int *)c->argv[0]);
     }
     
+    /* Create connection pool if not already created (first session) */
+    if (!mongodb_client_pool && mongodb_connection_string) {
+        mongoc_uri_t *uri = NULL;
+        bson_error_t error;
+        
+        pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
+                   ": Creating MongoDB connection pool");
+        
+        /* Parse and validate connection URI */
+        uri = mongoc_uri_new_with_error(mongodb_connection_string, &error);
+        if (!uri) {
+            pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                       ": Invalid MongoDB connection string: %s", error.message);
+            pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                       ": Please check your AuthMongoConnectionString directive");
+            return -1;
+        }
+        
+        /* Create connection pool with reasonable limits */
+        mongodb_client_pool = mongoc_client_pool_new(uri);
+        mongoc_uri_destroy(uri);
+        
+        if (!mongodb_client_pool) {
+            pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                       ": Failed to create MongoDB connection pool");
+            return -1;
+        }
+        
+        /* Set pool options for better performance and reliability */
+        mongoc_client_pool_set_error_api(mongodb_client_pool, MONGOC_ERROR_API_VERSION_2);
+        mongoc_client_pool_max_size(mongodb_client_pool, 10);  /* Max 10 concurrent connections */
+        
+        pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
+                   ": Connection pool created (max size: 10)");
+        
+        /* Validate configuration by testing connection */
+        if (validate_mongodb_configuration() != 0) {
+            pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                       ": Configuration validation failed - module will not work");
+            /* Don't fail startup, but log prominent warning */
+            pr_log_pri(PR_LOG_WARNING, MOD_AUTH_MONGODB_VERSION 
+                       ": Authentication will fail until MongoDB is accessible");
+        }
+    }
+    
     if (mongodb_debug_logging) {
         const char *method_name = "unknown";
         switch (mongodb_password_hash_method) {
@@ -765,19 +1156,75 @@ static int auth_mongodb_sess_init(void) {
 }
 
 /**
+ * validate_mongodb_configuration - Test MongoDB connection and validate config
+ * 
+ * Returns: 0 on success, -1 on failure
+ * 
+ * This function validates that the MongoDB configuration is correct by attempting
+ * to connect and perform a simple ping operation. Called during module initialization
+ * to fail fast if configuration is invalid.
+ */
+static int validate_mongodb_configuration(void) {
+    mongoc_client_t *client = NULL;
+    bson_t *ping_cmd = NULL;
+    bson_t reply;
+    bson_error_t error;
+    int success = 0;
+    
+    if (!mongodb_client_pool) {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": Connection pool not initialized");
+        return -1;
+    }
+    
+    /* Get a client from the pool to test connectivity */
+    client = mongoc_client_pool_pop(mongodb_client_pool);
+    if (!client) {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": Failed to get client from pool for validation");
+        return -1;
+    }
+    
+    /* Attempt to ping the MongoDB server */
+    ping_cmd = BCON_NEW("ping", BCON_INT32(1));
+    success = mongoc_client_command_simple(client, "admin", ping_cmd, NULL, &reply, &error);
+    
+    bson_destroy(ping_cmd);
+    bson_destroy(&reply);
+    mongoc_client_pool_push(mongodb_client_pool, client);
+    
+    if (!success) {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": MongoDB connection test failed: %s", error.message);
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": Please check your AuthMongoConnectionString directive");
+        return -1;
+    }
+    
+    pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
+               ": MongoDB connection validated successfully");
+    return 0;
+}
+
+/**
  * auth_mongodb_init - Module initialization callback
  * 
- * Returns: 0 on success
+ * Returns: 0 on success, -1 on failure
  * 
  * Called once when ProFTPD starts up (before any sessions). Initializes the
- * MongoDB C driver which must be done before any MongoDB operations can occur.
- * This is a process-wide initialization.
+ * MongoDB C driver and creates a connection pool for efficient connection reuse.
+ * This is a process-wide initialization that validates configuration early.
  */
 static int auth_mongodb_init(void) {
+    mongoc_uri_t *uri = NULL;
+    bson_error_t error;
+    
     /* Initialize MongoDB driver */
     mongoc_init();
     
     pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION ": Module initialized");
+    
+    /* Note: Connection pool will be created in sess_init after config is loaded */
     
     return 0;
 }
@@ -785,10 +1232,21 @@ static int auth_mongodb_init(void) {
 /**
  * auth_mongodb_cleanup - Module cleanup callback
  * 
- * Called when ProFTPD shuts down. Cleans up the MongoDB C driver and releases
- * any global resources. This is a process-wide cleanup.
+ * Called when ProFTPD shuts down. Destroys the connection pool, cleans up the
+ * MongoDB C driver, and releases any global resources. This is a process-wide cleanup.
  */
 static void auth_mongodb_cleanup(void) {
+    /* Invalidate cache to prevent information leakage across server restarts */
+    invalidate_cache();
+    
+    /* Destroy connection pool if it was created */
+    if (mongodb_client_pool) {
+        pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
+                   ": Destroying MongoDB connection pool");
+        mongoc_client_pool_destroy(mongodb_client_pool);
+        mongodb_client_pool = NULL;
+    }
+    
     /* Cleanup MongoDB driver */
     mongoc_cleanup();
     

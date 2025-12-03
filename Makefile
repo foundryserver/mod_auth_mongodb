@@ -5,7 +5,24 @@ MODULE = mod_auth_mongodb
 
 # Compiler and flags
 CC = gcc
-CFLAGS = -Wall -fPIC -shared
+
+# Security and optimization flags
+# -Wall -Wextra: Enable all warnings
+# -Werror: Treat warnings as errors
+# -fPIC: Position-independent code for shared library
+# -shared: Create shared library
+# -O2: Optimization level 2
+# -D_FORTIFY_SOURCE=2: Enable runtime buffer overflow detection
+# -fstack-protector-strong: Stack smashing protection
+# -D_GNU_SOURCE: Enable GNU extensions (needed for crypt_r on Linux)
+CFLAGS = -Wall -Wextra -Werror -fPIC -shared -O2 -D_FORTIFY_SOURCE=2 -fstack-protector-strong -D_GNU_SOURCE
+
+# Linker security flags
+# -Wl,-z,relro: Read-only relocations
+# -Wl,-z,now: Resolve all symbols at load time (prevents lazy binding attacks)
+LDFLAGS = -Wl,-z,relro,-z,now
+
+# MongoDB C driver flags
 MONGOC_CFLAGS = $(shell pkg-config --cflags libmongoc-1.0)
 MONGOC_LIBS = $(shell pkg-config --libs libmongoc-1.0)
 
@@ -31,32 +48,64 @@ check-deps:
 all: check-deps $(TARGET)
 
 $(TARGET): $(SOURCES)
-	$(CC) $(CFLAGS) $(PROFTPD_INCLUDE) $(MONGOC_CFLAGS) -o $(TARGET) $(SOURCES) $(MONGOC_LIBS)
+	$(CC) $(CFLAGS) $(PROFTPD_INCLUDE) $(MONGOC_CFLAGS) $(LDFLAGS) -o $(TARGET) $(SOURCES) $(MONGOC_LIBS)
+	@echo ""
+	@echo "Build complete with security hardening enabled:"
+	@echo "  - Stack protection"
+	@echo "  - Buffer overflow detection"
+	@echo "  - Read-only relocations"
+	@echo "  - Immediate symbol resolution"
 
 # Clean rule
 clean:
 	rm -f $(TARGET)
 
-# Install rule (adjust PROFTPD_MODULES_DIR as needed)
-install: $(TARGET)
-	@echo "Installing $(TARGET) to ProFTPD modules directory..."
-	@echo "You may need to run: sudo cp $(TARGET) /usr/local/libexec/ or /usr/lib/proftpd/"
-	@echo "Adjust the path based on your ProFTPD installation."
+# Static analysis
+lint:
+	@echo "Running static analysis with cppcheck..."
+	@which cppcheck > /dev/null 2>&1 || (echo "cppcheck not installed. Install with: sudo apt-get install cppcheck" && exit 1)
+	cppcheck --enable=all --suppress=missingIncludeSystem --std=c11 $(SOURCES)
+
+# Security check
+security-check: $(TARGET)
+	@echo "Checking security features..."
+	@echo "Checking for stack protection:"
+	@readelf -s $(TARGET) | grep -q __stack_chk_fail && echo "  ✓ Stack protection enabled" || echo "  ✗ Stack protection missing"
+	@echo "Checking for position-independent code:"
+	@readelf -h $(TARGET) | grep -q "DYN" && echo "  ✓ Position-independent code" || echo "  ✗ Not position-independent"
+	@echo "Checking for read-only relocations:"
+	@readelf -d $(TARGET) | grep -q "BIND_NOW" && echo "  ✓ BIND_NOW enabled" || echo "  ✗ BIND_NOW missing"
 
 # Help
 help:
 	@echo "Available targets:"
-	@echo "  all     - Build the module (default)"
-	@echo "  clean   - Remove compiled files"
-	@echo "  install - Show installation instructions"
-	@echo "  help    - Show this help message"
+	@echo "  all            - Build the module with security hardening (default)"
+	@echo "  clean          - Remove compiled files"
+	@echo "  install        - Show installation instructions"
+	@echo "  lint           - Run static analysis with cppcheck"
+	@echo "  security-check - Verify security features in compiled module"
+	@echo "  help           - Show this help message"
+	@echo ""
+	@echo "Security features enabled by default:"
+	@echo "  - Stack smashing protection (-fstack-protector-strong)"
+	@echo "  - Buffer overflow detection (-D_FORTIFY_SOURCE=2)"
+	@echo "  - Read-only relocations (-Wl,-z,relro)"
+	@echo "  - Immediate binding (-Wl,-z,now)"
+	@echo "  - All compiler warnings as errors (-Werror)"
 	@echo ""
 	@echo "Prerequisites:"
 	@echo "  - libmongoc-1.0 and libbson-1.0 development packages"
 	@echo "  - ProFTPD development headers"
 	@echo "  - pkg-config"
+	@echo "  - gcc with security hardening support"
 	@echo ""
 	@echo "Install dependencies (Debian/Ubuntu):"
+	@echo "  sudo apt-get install libmongoc-dev libbson-dev proftpd-dev pkg-config build-essential"
+	@echo ""
+	@echo "Install dependencies (RHEL/CentOS):"
+	@echo "  sudo yum install mongo-c-driver-devel proftpd-devel pkgconfig gcc"
+
+.PHONY: all clean install help check-deps lint security-checktu):"
 	@echo "  sudo apt-get install libmongoc-dev libbson-dev proftpd-dev pkg-config"
 	@echo ""
 	@echo "Install dependencies (RHEL/CentOS):"
