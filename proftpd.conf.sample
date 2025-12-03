@@ -126,14 +126,6 @@ AuthMongoPasswordHashMethod     bcrypt
 AuthMongoDebugLogging           yes
 
 # ============================================================================
-# AUTHENTICATION CONFIGURATION
-# ============================================================================
-
-# Use ONLY MongoDB for authentication (skip system /etc/passwd)
-# This ensures all users come from MongoDB
-AuthOrder                       mod_auth_mongodb.c
-
-# ============================================================================
 # SECURITY: USER JAILING (CHROOT)
 # ============================================================================
 
