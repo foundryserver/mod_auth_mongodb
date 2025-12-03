@@ -48,7 +48,27 @@ check-deps:
 all: check-deps $(TARGET)
 
 $(TARGET): $(SOURCES)
+	@echo "Building $(TARGET)..."
+	@echo "Source files: $(SOURCES)"
+	@echo "Compiler: $(CC)"
+	@echo "CFLAGS: $(CFLAGS)"
+	@echo "PROFTPD_INCLUDE: $(PROFTPD_INCLUDE)"
+	@echo "MONGOC_CFLAGS: $(MONGOC_CFLAGS)"
+	@echo "MONGOC_LIBS: $(MONGOC_LIBS)"
+	@echo "LDFLAGS: $(LDFLAGS)"
+	@echo ""
+	@echo "Running compilation command..."
 	$(CC) $(CFLAGS) $(PROFTPD_INCLUDE) $(MONGOC_CFLAGS) $(LDFLAGS) -o $(TARGET) $(SOURCES) $(MONGOC_LIBS)
+	@echo ""
+	@echo "Compilation complete. Checking for output file..."
+	@if [ -f $(TARGET) ]; then \
+		echo "✓ $(TARGET) created successfully"; \
+		ls -lh $(TARGET); \
+		echo "File location: $$(pwd)/$(TARGET)"; \
+	else \
+		echo "✗ ERROR: $(TARGET) was not created!"; \
+		exit 1; \
+	fi
 	@echo ""
 	@echo "Build complete with security hardening enabled:"
 	@echo "  - Stack protection"
