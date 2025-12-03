@@ -4,6 +4,13 @@ All notable changes to the ProFTPD MongoDB Authentication Module will be documen
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Build**: Fixed corrupted `.PHONY` declaration in Makefile causing "multiple target patterns" error
+- **Build**: Added missing `install` target to Makefile for module installation
+
 ## [1.1.0] - 2025-12-03
 
 ### Added

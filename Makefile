@@ -60,6 +60,18 @@ $(TARGET): $(SOURCES)
 clean:
 	rm -f $(TARGET)
 
+# Install rule
+install: $(TARGET)
+	@echo "Installing $(TARGET)..."
+	@mkdir -p /usr/local/libexec/proftpd
+	@install -m 755 $(TARGET) /usr/local/libexec/proftpd/
+	@echo "Module installed to /usr/local/libexec/proftpd/"
+	@echo ""
+	@echo "Next steps:"
+	@echo "1. Add 'LoadModule mod_auth_mongodb.c' to your proftpd.conf"
+	@echo "2. Configure MongoDB authentication directives"
+	@echo "3. Restart ProFTPD"
+
 # Static analysis
 lint:
 	@echo "Running static analysis with cppcheck..."
@@ -105,10 +117,4 @@ help:
 	@echo "Install dependencies (RHEL/CentOS):"
 	@echo "  sudo yum install mongo-c-driver-devel proftpd-devel pkgconfig gcc"
 
-.PHONY: all clean install help check-deps lint security-checktu):"
-	@echo "  sudo apt-get install libmongoc-dev libbson-dev proftpd-dev pkg-config"
-	@echo ""
-	@echo "Install dependencies (RHEL/CentOS):"
-	@echo "  sudo yum install mongo-c-driver-devel proftpd-devel pkgconfig"
-
-.PHONY: all clean install help check-deps
+.PHONY: all clean install help check-deps lint security-check
