@@ -10,17 +10,18 @@ CC = gcc
 # -Wall -Wextra: Enable all warnings
 # -Werror: Treat warnings as errors
 # -fPIC: Position-independent code for shared library
-# -shared: Create shared library
 # -O2: Optimization level 2
 # -D_FORTIFY_SOURCE=2: Enable runtime buffer overflow detection
 # -fstack-protector-strong: Stack smashing protection
 # -D_GNU_SOURCE: Enable GNU extensions (needed for crypt_r on Linux)
-CFLAGS = -Wall -Wextra -Werror -fPIC -shared -O2 -D_FORTIFY_SOURCE=2 -fstack-protector-strong -D_GNU_SOURCE
+# -DPR_SHARED_MODULE: Required for ProFTPD DSO modules
+CFLAGS = -Wall -Wextra -Werror -fPIC -O2 -D_FORTIFY_SOURCE=2 -fstack-protector-strong -D_GNU_SOURCE -DPR_SHARED_MODULE
 
 # Linker security flags
+# -shared: Create shared library
 # -Wl,-z,relro: Read-only relocations
 # -Wl,-z,now: Resolve all symbols at load time (prevents lazy binding attacks)
-LDFLAGS = -Wl,-z,relro,-z,now
+LDFLAGS = -shared -Wl,-z,relro,-z,now
 
 # MongoDB C driver flags
 MONGOC_CFLAGS = $(shell pkg-config --cflags libmongoc-1.0)
