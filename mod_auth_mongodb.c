@@ -101,7 +101,6 @@ module auth_mongodb_module;
 
 /* Forward declarations */
 static int auth_mongodb_sess_init(void);
-static void auth_mongodb_cleanup(void);
 static int parse_uid_gid(const char *str, unsigned long *out, const char *field_name);
 static int validate_mongodb_configuration(void);
 static int is_cache_valid(const char *username);
@@ -1008,9 +1007,9 @@ MODRET auth_mongodb_auth(cmd_rec *cmd) {
 
 /* Authentication table */
 static authtable auth_mongodb_authtab[] = {
-    { 0, "getpwnam", auth_mongodb_getpwnam },
-    { 0, "auth",     auth_mongodb_auth },
-    { 0, NULL, NULL }
+    { 0, "getpwnam", auth_mongodb_getpwnam, NULL },
+    { 0, "auth",     auth_mongodb_auth, NULL },
+    { 0, NULL, NULL, NULL }
 };
 
 /* ==============================================================================
@@ -1216,9 +1215,6 @@ static int validate_mongodb_configuration(void) {
  * This is a process-wide initialization that validates configuration early.
  */
 static int auth_mongodb_init(void) {
-    mongoc_uri_t *uri = NULL;
-    bson_error_t error;
-    
     /* Initialize MongoDB driver */
     mongoc_init();
     
@@ -1227,30 +1223,6 @@ static int auth_mongodb_init(void) {
     /* Note: Connection pool will be created in sess_init after config is loaded */
     
     return 0;
-}
-
-/**
- * auth_mongodb_cleanup - Module cleanup callback
- * 
- * Called when ProFTPD shuts down. Destroys the connection pool, cleans up the
- * MongoDB C driver, and releases any global resources. This is a process-wide cleanup.
- */
-static void auth_mongodb_cleanup(void) {
-    /* Invalidate cache to prevent information leakage across server restarts */
-    invalidate_cache();
-    
-    /* Destroy connection pool if it was created */
-    if (mongodb_client_pool) {
-        pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
-                   ": Destroying MongoDB connection pool");
-        mongoc_client_pool_destroy(mongodb_client_pool);
-        mongodb_client_pool = NULL;
-    }
-    
-    /* Cleanup MongoDB driver */
-    mongoc_cleanup();
-    
-    pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION ": Module cleanup complete");
 }
 
 /* ==============================================================================
@@ -1269,5 +1241,8 @@ module auth_mongodb_module = {
     auth_mongodb_authtab,           /* Authentication handlers (getpwnam, auth) */
     auth_mongodb_init,              /* Module initialization (called at startup) */
     auth_mongodb_sess_init,         /* Session initialization (called per connection) */
-    MOD_AUTH_MONGODB_VERSION        /* Module version string */
+    MOD_AUTH_MONGODB_VERSION,       /* Module version string */
+    NULL,                           /* Session cleanup (not used) */
+    NULL,                           /* Module cleanup - not using cleanup callback */
+    NULL                            /* Module handle (reserved) */
 };
