@@ -296,69 +296,6 @@ console.log(hash);
 - **Configurable timeouts**: Prevents hanging on MongoDB connection issues
   **Using command line (SHA-256):**
 
-````bash
-### Common Issues
-
-| Issue | Solution |
-|-------|----------|
-| **Module not loading** | • Check module path: `proftpd -V \| grep PROFTPD_DIR_MODULE`<br>• Verify DSO support: `proftpd -V \| grep DSO`<br>• Check module exists: `ls -la /usr/local/libexec/mod_auth_mongodb.*` |
-| **Connection failures** | • Test MongoDB: `mongosh "mongodb://..."`<br>• Check firewall rules<br>• Verify authSource in connection string<br>• Enable debug logging to see connection details |
-| **Authentication always fails** | • Verify `AuthMongoPasswordHashMethod` matches password format<br>• Check bcrypt hashes start with `$2a$`, `$2b$`, or `$2y$`<br>• Enable debug logging: `AuthMongoDebugLogging yes`<br>• Test query manually in MongoDB<br>• Check all required fields exist in documents |
-| **User can access wrong directory** | • Verify `DefaultRoot ~` is set<br>• Check home_directory field has correct path<br>• Ensure directory exists and has correct ownership |
-| **Permission denied errors** | • Create home directory: `mkdir -p /home/user`<br>• Set ownership: `chown uid:gid /home/user`<br>• Set permissions: `chmod 755 /home/user` |
-| **Syntax error in config** | • Test config: `proftpd -t -c /etc/proftpd/proftpd.conf`<br>• Check for typos in directive names<br>• Ensure LoadModule comes before other directives |
-
-### Testing Commands
-
-```bash
-# Test configuration syntax
-proftpd -t -c /etc/proftpd/proftpd.conf
-
-# Check if module is loaded
-proftpd -l | grep mongodb
-
-# Test FTP connection
-ftp localhost
-# Enter username and password
-
-# Test SFTP connection
-sftp -P 2222 testuser@localhost
-
-# Monitor authentication in real-time
-tail -f /var/log/proftpd/system.log
-
-# Test MongoDB connection
-mongosh "mongodb://user:pass@host:27017/authentication"
-````
-
-## Recent Improvements (v1.1)
-
-### Security Enhancements
-
-- ✅ **Connection pooling** - Reuses MongoDB connections for better performance
-- ✅ **Thread-safe password hashing** - Uses `crypt_r()` on Linux to prevent race conditions
-- ✅ **UID/GID validation** - Strict range checking (must be >= 1) prevents uid 0 attacks
-- ✅ **BSON type safety** - Validates field types before conversion
-- ✅ **Safe integer parsing** - Uses `strtol()` with error checking instead of `atoi()`
-- ✅ **Startup validation** - Tests MongoDB connection at server start with clear error messages
-- ✅ **Resource leak fixes** - All error paths properly return connections to pool
-
-### Build System Improvements
-
-- ✅ **Security hardening flags** - Stack protection, buffer overflow detection, RELRO
-- ✅ **Static analysis support** - `make lint` for cppcheck integration
-
-## AI Development Transparency
-
-This project was developed with AI assistance. For full disclosure of AI involvement, tooling, and human oversight, please see **[AI_DISCLOSURE.md](AI_DISCLOSURE.md)**.
-
-**Summary:**
-
-- **IDE:** Visual Studio Code
-- **AI Assistant:** GitHub Copilot (Claude Sonnet 4.5 by Anthropic)
-- **Human Oversight:** All code reviewed and validated by human developers
-- **Scope:** ~90% of code written with AI assistance, 100% human-directed
-
 ## Contributing
 
 Issues and pull requests welcome! This module is production-ready with security hardening.
@@ -381,6 +318,7 @@ For issues:
 2. Verify MongoDB connection with `mongosh`
 3. Test configuration syntax with `proftpd -t`
 4. Check the fully documented `proftpd.conf.sample` for examples
+5. Open a github Issue only after completing steps 1-4.
 
 ## Usage
 
