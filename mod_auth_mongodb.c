@@ -40,7 +40,7 @@
 #include <errno.h>
 #include <sys/time.h>
 
-#define MOD_AUTH_MONGODB_VERSION "mod_auth_mongodb/1.1"
+#define MOD_AUTH_MONGODB_VERSION "mod_auth_mongodb/1.1.1"
 
 /* Password hash methods - determines how stored passwords are verified
  * PLAIN:   Direct string comparison (insecure, for testing only)

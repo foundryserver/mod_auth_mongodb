@@ -4,12 +4,21 @@ All notable changes to the ProFTPD MongoDB Authentication Module will be documen
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-## [Unreleased]
+## [1.1.1] - 2025-12-03
 
 ### Fixed
 
 - **Build**: Fixed corrupted `.PHONY` declaration in Makefile causing "multiple target patterns" error
+- **Build**: Fixed missing field initializers in `authtable` structure (added NULL for 'm' field)
+- **Build**: Fixed missing field initializers in module structure (added NULL for 'handle' and 0 for 'priority')
+- **Build**: Removed unused `auth_mongodb_cleanup()` function that caused compilation warning
+- **Build**: Removed unused variables `uri` and `error` from `auth_mongodb_init()`
+
+### Added
+
 - **Build**: Added missing `install` target to Makefile for module installation
+- **Build**: Added comprehensive debug output to Makefile build process
+- **Build**: Added build verification that confirms `.so` file creation and displays file location
 
 ## [1.1.0] - 2025-12-03
 

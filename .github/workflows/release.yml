@@ -1,0 +1,65 @@
+name: Create Release
+
+on:
+    push:
+        tags:
+            - "v*" # Trigger on version tags like v1.1.1, v2.0.0, etc.
+
+permissions:
+    contents: write
+
+jobs:
+    release:
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Get version from tag
+              id: get_version
+              run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+            - name: Create source archive
+              run: |
+                  # Create a directory with the version name
+                  mkdir -p "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}"
+
+                  # Copy source files
+                  cp mod_auth_mongodb.c "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}/"
+                  cp Makefile "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}/"
+                  cp README.md "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}/"
+                  cp CHANGELOG.md "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}/"
+                  cp proftpd.conf.sample "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}/"
+                  cp AI_DISCLOSURE.md "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}/"
+
+                  # Create zip archive
+                  zip -r "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}.zip" "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}"
+
+                  # Create tar.gz archive
+                  tar -czf "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}.tar.gz" "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}"
+
+            - name: Extract changelog for this version
+              id: changelog
+              run: |
+                  # Extract changelog section for this version
+                  VERSION="${{ steps.get_version.outputs.VERSION }}"
+                  awk "/## \[$VERSION\]/,/## \[/" CHANGELOG.md | sed '$d' > release_notes.md
+
+                  # If no changelog found, create a default message
+                  if [ ! -s release_notes.md ]; then
+                    echo "Release $VERSION" > release_notes.md
+                  fi
+
+            - name: Create GitHub Release
+              uses: softprops/action-gh-release@v1
+              with:
+                  name: Release v${{ steps.get_version.outputs.VERSION }}
+                  body_path: release_notes.md
+                  files: |
+                      mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}.zip
+                      mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}.tar.gz
+                  draft: false
+                  prerelease: false
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
