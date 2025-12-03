@@ -347,11 +347,13 @@ mongosh "mongodb://user:pass@host:27017/authentication"
 
 - ✅ **Security hardening flags** - Stack protection, buffer overflow detection, RELRO
 - ✅ **Static analysis support** - `make lint` for cppcheck integration
+
 ## AI Development Transparency
 
 This project was developed with AI assistance. For full disclosure of AI involvement, tooling, and human oversight, please see **[AI_DISCLOSURE.md](AI_DISCLOSURE.md)**.
 
 **Summary:**
+
 - **IDE:** Visual Studio Code
 - **AI Assistant:** GitHub Copilot (Claude Sonnet 4.5 by Anthropic)
 - **Human Oversight:** All code reviewed and validated by human developers
@@ -366,6 +368,7 @@ Please note: Future contributions may also use AI assistance tools. All contribu
 ## License
 
 Copyright (c) 2025. This module is provided as-is for use with ProFTPD.
+
 ## License
 
 Copyright (c) 2025. This module is provided as-is for use with ProFTPD.
