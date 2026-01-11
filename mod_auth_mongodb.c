@@ -17,6 +17,7 @@
  * - AuthMongoDocumentFieldGid: Field name for group ID (numeric string)
  * - AuthMongoDocumentFieldPath: Field name for user's home directory path
  * - AuthMongoPasswordHashMethod: Hash method (plain, bcrypt, crypt, sha256, sha512)
+ * - AuthMongoConnectionPoolSize: Max pool size 1-100 (default: 10, optional)
  * - AuthMongoDebugLogging: Enable verbose debug logging (on/off)
  * - AuthMongoNoAuthString: Custom error message for failed authentication
  * - AuthMongoNoConnectionString: Custom error message for connection failures
@@ -40,7 +41,7 @@
 #include <errno.h>
 #include <sys/time.h>
 
-#define MOD_AUTH_MONGODB_VERSION "mod_auth_mongodb/1.1.1"
+#define MOD_AUTH_MONGODB_VERSION "mod_auth_mongodb/1.2.0"
 
 /* Password hash methods - determines how stored passwords are verified
  * PLAIN:   Direct string comparison (insecure, for testing only)
@@ -54,6 +55,11 @@
 #define HASH_METHOD_CRYPT   2
 #define HASH_METHOD_SHA256  3
 #define HASH_METHOD_SHA512  4
+
+/* Security constants */
+#define MAX_USERNAME_LENGTH 256
+#define MAX_PASSWORD_LENGTH 1024
+#define DEFAULT_POOL_SIZE 10
 
 /* Module configuration structure - runtime configuration values loaded from
  * ProFTPD config file during session initialization. These values determine
@@ -71,6 +77,7 @@ static char *mongodb_error_noauth = NULL;
 static char *mongodb_error_noconnection = NULL;
 static int mongodb_debug_logging = FALSE;
 static int mongodb_password_hash_method = HASH_METHOD_PLAIN;
+static int mongodb_pool_size = DEFAULT_POOL_SIZE;
 
 /* MongoDB connection pool for reusing connections across authentication requests.
  * This significantly improves performance by avoiding connection overhead.
@@ -101,12 +108,15 @@ module auth_mongodb_module;
 
 /* Forward declarations */
 static int auth_mongodb_sess_init(void);
+static int auth_mongodb_module_cleanup(void);
+static int auth_mongodb_sess_cleanup(void);
 static int parse_uid_gid(const char *str, unsigned long *out, const char *field_name);
 static int validate_mongodb_configuration(void);
 static int is_cache_valid(const char *username);
 static void cache_user_data(const char *username, const char *password_hash,
                            uid_t uid, gid_t gid, const char *home_dir);
 static void invalidate_cache(void);
+static int constant_time_compare(const char *a, const char *b, size_t len);
 
 /* ==============================================================================
  * CONFIGURATION DIRECTIVE HANDLERS
@@ -266,6 +276,28 @@ MODRET set_mongodb_password_hash_method(cmd_rec *cmd) {
     return PR_HANDLED(cmd);
 }
 
+/**
+ * Handler: AuthMongoConnectionPoolSize
+ * Sets the maximum size of the MongoDB connection pool (1-100)
+ * Default: 10 connections
+ */
+MODRET set_mongodb_pool_size(cmd_rec *cmd) {
+    int pool_size = 0;
+    char *endptr = NULL;
+    
+    CHECK_ARGS(cmd, 1);
+    CHECK_CONF(cmd, CONF_ROOT | CONF_VIRTUAL | CONF_GLOBAL);
+    
+    pool_size = (int)strtol(cmd->argv[1], &endptr, 10);
+    
+    if (*endptr != '\0' || pool_size < 1 || pool_size > 100) {
+        CONF_ERROR(cmd, "pool size must be between 1 and 100");
+    }
+    
+    add_config_param(cmd->argv[0], 1, (void *)(long)pool_size);
+    return PR_HANDLED(cmd);
+}
+
 /* Configuration table */
 static conftable auth_mongodb_conftab[] = {
     { "AuthMongoConnectionString",      set_mongodb_connection_string,  NULL },
@@ -280,6 +312,7 @@ static conftable auth_mongodb_conftab[] = {
     { "AuthMongoNoConnectionString",    set_mongodb_error_noconnection, NULL },
     { "AuthMongoDebugLogging",          set_mongodb_debug_logging,      NULL },
     { "AuthMongoPasswordHashMethod",    set_mongodb_password_hash_method, NULL },
+    { "AuthMongoConnectionPoolSize",    set_mongodb_pool_size,          NULL },
     { NULL, NULL, NULL }
 };
 
@@ -374,14 +407,51 @@ static void cache_user_data(const char *username, const char *password_hash,
 }
 
 /**
- * invalidate_cache - Clear the user cache
+ * invalidate_cache - Clear the user cache (secure memory wipe)
  * 
  * Called when authentication fails or on session cleanup to prevent
- * information leakage across sessions.
+ * information leakage across sessions. Uses explicit_bzero if available
+ * to prevent compiler optimization from removing the zeroing.
  */
 static void invalidate_cache(void) {
-    memset(&user_cache, 0, sizeof(user_cache));
+#if defined(__GLIBC__) && defined(_GNU_SOURCE)
+    explicit_bzero(&user_cache, sizeof(user_cache));
+#else
+    volatile unsigned char *p = (volatile unsigned char *)&user_cache;
+    size_t i;
+    for (i = 0; i < sizeof(user_cache); i++) {
+        p[i] = 0;
+    }
+#endif
     user_cache.valid = 0;
+}
+
+/**
+ * constant_time_compare - Compare two strings in constant time
+ * @a: First string
+ * @b: Second string  
+ * @len: Maximum length to compare
+ * 
+ * Returns: 0 if strings match, non-zero if they differ
+ * 
+ * This function compares strings in constant time to prevent timing attacks.
+ * Always compares all bytes up to len, regardless of where differences occur.
+ * CRITICAL for password verification security.
+ */
+static int constant_time_compare(const char *a, const char *b, size_t len) {
+    volatile unsigned char result = 0;
+    size_t i;
+    
+    if (!a || !b) {
+        return -1;
+    }
+    
+    /* Compare all bytes, accumulate differences */
+    for (i = 0; i < len; i++) {
+        result |= ((unsigned char)a[i]) ^ ((unsigned char)b[i]);
+    }
+    
+    return result;
 }
 
 /* ==============================================================================
@@ -453,11 +523,32 @@ static int verify_password(const char *plain_password, const char *stored_hash) 
     switch (mongodb_password_hash_method) {
         case HASH_METHOD_PLAIN:
             /* Plain text comparison - WARNING: NOT SECURE, for testing only */
-            result = (strcmp(plain_password, stored_hash) == 0);
-            if (mongodb_debug_logging) {
-                pr_log_pri(PR_LOG_DEBUG, MOD_AUTH_MONGODB_VERSION 
-                           " (plain): Password comparison %s", 
-                           result ? "matched" : "failed");
+            /* Use constant-time comparison even for plain text to prevent timing attacks */
+            {
+                size_t plain_len = strlen(plain_password);
+                size_t stored_len = strlen(stored_hash);
+                size_t max_len = (plain_len > stored_len) ? plain_len : stored_len;
+                
+                if (max_len > MAX_PASSWORD_LENGTH) {
+                    pr_log_pri(PR_LOG_WARNING, MOD_AUTH_MONGODB_VERSION 
+                               ": Password length exceeds maximum (%zu > %d)", 
+                               max_len, MAX_PASSWORD_LENGTH);
+                    result = 0;
+                } else if (plain_len != stored_len) {
+                    /* Lengths differ - still do constant-time comparison to avoid timing leak */
+                    char dummy[MAX_PASSWORD_LENGTH];
+                    memset(dummy, 0, sizeof(dummy));
+                    constant_time_compare(plain_password, dummy, plain_len);
+                    result = 0;
+                } else {
+                    result = (constant_time_compare(plain_password, stored_hash, plain_len) == 0);
+                }
+                
+                if (mongodb_debug_logging) {
+                    pr_log_pri(PR_LOG_DEBUG, MOD_AUTH_MONGODB_VERSION 
+                               " (plain): Password comparison %s", 
+                               result ? "matched" : "failed");
+                }
             }
             break;
             
@@ -622,7 +713,8 @@ static const bson_t* query_mongodb_user(const char *username, mongoc_client_t **
                    ": MongoDB query error: %s", error.message);
         mongoc_cursor_destroy(cursor);
         mongoc_collection_destroy(collection);
-        mongoc_client_destroy(client);
+        /* SECURITY FIX: Return client to pool instead of destroying it */
+        mongoc_client_pool_push(mongodb_client_pool, client);
         if (mongodb_error_noconnection) {
             pr_response_add_err(R_530, "%s", mongodb_error_noconnection);
         }
@@ -689,8 +781,23 @@ MODRET auth_mongodb_getpwnam(cmd_rec *cmd) {
     const char *password_str = NULL;
     uid_t uid = 0;
     gid_t gid = 0;
+    size_t username_len = 0;
     
     username = cmd->argv[0];
+    
+    /* SECURITY: Validate username length to prevent potential overflow issues */
+    if (!username) {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION ": NULL username provided");
+        return PR_DECLINED(cmd);
+    }
+    
+    username_len = strlen(username);
+    if (username_len == 0 || username_len >= MAX_USERNAME_LENGTH) {
+        pr_log_pri(PR_LOG_WARNING, MOD_AUTH_MONGODB_VERSION 
+                   ": Invalid username length: %zu (max: %d)", 
+                   username_len, MAX_USERNAME_LENGTH - 1);
+        return PR_DECLINED(cmd);
+    }
     
     if (mongodb_debug_logging) {
         pr_log_pri(PR_LOG_DEBUG, MOD_AUTH_MONGODB_VERSION 
@@ -907,9 +1014,31 @@ MODRET auth_mongodb_auth(cmd_rec *cmd) {
     bson_iter_t iter;
     const char *stored_password = NULL;
     int using_cache = 0;
+    size_t username_len = 0;
     
     username = cmd->argv[0];
     password = cmd->argv[1];
+    
+    /* SECURITY: Validate inputs */
+    if (!username || !password) {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": NULL username or password provided");
+        if (mongodb_error_noauth) {
+            pr_response_add_err(R_530, "%s", mongodb_error_noauth);
+        }
+        return PR_ERROR_INT(cmd, PR_AUTH_BADPWD);
+    }
+    
+    username_len = strlen(username);
+    if (username_len == 0 || username_len >= MAX_USERNAME_LENGTH) {
+        pr_log_pri(PR_LOG_WARNING, MOD_AUTH_MONGODB_VERSION 
+                   ": Invalid username length: %zu (max: %d)", 
+                   username_len, MAX_USERNAME_LENGTH - 1);
+        if (mongodb_error_noauth) {
+            pr_response_add_err(R_530, "%s", mongodb_error_noauth);
+        }
+        return PR_ERROR_INT(cmd, PR_AUTH_BADPWD);
+    }
     
     if (mongodb_debug_logging) {
         pr_log_pri(PR_LOG_DEBUG, MOD_AUTH_MONGODB_VERSION 
@@ -1092,6 +1221,11 @@ static int auth_mongodb_sess_init(void) {
         mongodb_password_hash_method = (int)(long)c->argv[0];
     }
     
+    c = find_config(main_server->conf, CONF_PARAM, "AuthMongoConnectionPoolSize", FALSE);
+    if (c) {
+        mongodb_pool_size = (int)(long)c->argv[0];
+    }
+    
     /* Create connection pool if not already created (first session) */
     if (!mongodb_client_pool && mongodb_connection_string) {
         mongoc_uri_t *uri = NULL;
@@ -1122,10 +1256,10 @@ static int auth_mongodb_sess_init(void) {
         
         /* Set pool options for better performance and reliability */
         mongoc_client_pool_set_error_api(mongodb_client_pool, MONGOC_ERROR_API_VERSION_2);
-        mongoc_client_pool_max_size(mongodb_client_pool, 10);  /* Max 10 concurrent connections */
+        mongoc_client_pool_max_size(mongodb_client_pool, (uint32_t)mongodb_pool_size);
         
         pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
-                   ": Connection pool created (max size: 10)");
+                   ": Connection pool created (max size: %d)", mongodb_pool_size);
         
         /* Validate configuration by testing connection */
         if (validate_mongodb_configuration() != 0) {
@@ -1150,6 +1284,29 @@ static int auth_mongodb_sess_init(void) {
                    ": Session initialized with MongoDB configuration (hash method: %s)", 
                    method_name);
     }
+    
+    return 0;
+}
+
+/**
+ * auth_mongodb_sess_cleanup - Session cleanup callback
+ * 
+ * Returns: Always returns 0
+ * 
+ * Called when an FTP session ends (client disconnects). This function
+ * invalidates the user cache to prevent sensitive data from persisting
+ * in memory after the session ends.
+ * 
+ * SECURITY: Critical for preventing information leakage between sessions.
+ */
+static int auth_mongodb_sess_cleanup(void) {
+    if (mongodb_debug_logging) {
+        pr_log_pri(PR_LOG_DEBUG, MOD_AUTH_MONGODB_VERSION 
+                   ": Session cleanup - invalidating cache");
+    }
+    
+    /* Clear sensitive cached data */
+    invalidate_cache();
     
     return 0;
 }
@@ -1220,7 +1377,43 @@ static int auth_mongodb_init(void) {
     
     pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION ": Module initialized");
     
+    /* Register event handlers for cleanup */
+    pr_event_register(&auth_mongodb_module, "core.exit", auth_mongodb_sess_cleanup, NULL);
+    pr_event_register(&auth_mongodb_module, "core.shutdown", auth_mongodb_module_cleanup, NULL);
+    
     /* Note: Connection pool will be created in sess_init after config is loaded */
+    
+    return 0;
+}
+
+/**
+ * auth_mongodb_module_cleanup - Module cleanup callback
+ * 
+ * Returns: Always returns 0
+ * 
+ * Called when ProFTPD is shutting down. This function destroys the MongoDB
+ * connection pool and performs cleanup of the MongoDB C driver.
+ * 
+ * IMPORTANT: Prevents memory leaks on server restart/shutdown.
+ */
+static int auth_mongodb_module_cleanup(void) {
+    pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION ": Module cleanup starting");
+    
+    /* Destroy connection pool if it exists */
+    if (mongodb_client_pool) {
+        pr_log_pri(PR_LOG_DEBUG, MOD_AUTH_MONGODB_VERSION 
+                   ": Destroying MongoDB connection pool");
+        mongoc_client_pool_destroy(mongodb_client_pool);
+        mongodb_client_pool = NULL;
+    }
+    
+    /* Cleanup MongoDB driver */
+    mongoc_cleanup();
+    
+    /* Securely wipe cache */
+    invalidate_cache();
+    
+    pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION ": Module cleanup complete");
     
     return 0;
 }
@@ -1241,7 +1434,5 @@ module auth_mongodb_module = {
     auth_mongodb_authtab,           /* Authentication handlers (getpwnam, auth) */
     auth_mongodb_init,              /* Module initialization (called at startup) */
     auth_mongodb_sess_init,         /* Session initialization (called per connection) */
-    MOD_AUTH_MONGODB_VERSION,       /* Module version string */
-    NULL,                           /* Module handle (reserved) */
-    0                               /* Priority (internal use) */
+    MOD_AUTH_MONGODB_VERSION        /* Module version string */
 };

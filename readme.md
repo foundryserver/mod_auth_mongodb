@@ -24,7 +24,7 @@ A ProFTPD authentication module that authenticates users against a MongoDB datab
 This module has been hardened for production use with the following security measures:
 
 - **Thread-safe authentication** prevents race conditions during concurrent logins
-- **Connection pooling** (max 10 connections) prevents resource exhaustion
+- **Connection pooling** (configurable, default 10) prevents resource exhaustion
 - **Input validation** on all uid/gid values prevents privilege escalation attacks
 - **BSON type checking** prevents type confusion vulnerabilities
 - **Compiled with security flags**: stack protection, buffer overflow detection, RELRO, immediate binding
@@ -221,6 +221,7 @@ All directives are configured in `proftpd.conf`. See `proftpd.conf.sample` for a
 | `AuthMongoDocumentFieldGid`      | ✅       | Field name for group ID (string)                            | `"gid"`                                              |
 | `AuthMongoDocumentFieldPath`     | ✅       | Field name for home directory path                          | `"home_directory"`                                   |
 | `AuthMongoPasswordHashMethod`    | ❌       | Hash method: `plain`, `bcrypt`, `crypt`, `sha256`, `sha512` | `bcrypt` (default: `plain`)                          |
+| `AuthMongoConnectionPoolSize`    | ❌       | Max connection pool size (1-100)                            | `20` (default: `10`)                                 |
 | `AuthMongoNoAuthString`          | ❌       | Error message for failed authentication                     | `"Your username/password is incorrect"`              |
 | `AuthMongoNoConnectionString`    | ❌       | Error message for connection failures                       | `"Failed to connect to Authentication Server"`       |
 | `AuthMongoDebugLogging`          | ❌       | Enable debug logging (`yes`/`no`)                           | `yes` (default: `no`)                                |
@@ -250,6 +251,7 @@ These values would be configured in proftpd.conf.
 ### Proftpd Related Settings.
 
 AuthMongoConnectionString: (connection string url to mondo db)
+AuthMongoConnectionPoolSize: (max connection pool size 1-100, default: 10, optional)
 AuthMongoNoAuthString: "Your username/password is incorrect"
 AuthMongoNoConnectionString: "Failed to connect to Authentication Server"
 
@@ -347,7 +349,7 @@ console.log(hash);
 
 ### Performance Optimizations
 
-- **Connection pooling**: Maintains up to 10 reusable MongoDB connections
+- **Connection pooling**: Maintains configurable pool of reusable MongoDB connections (default: 10, max: 100)
 - **Query result caching**: Caches user data for 5 seconds to avoid duplicate queries
   - ProFTPD calls `getpwnam()` then `auth()` for the same user
   - Cache hit eliminates second MongoDB query (50% reduction)

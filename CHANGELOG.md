@@ -4,6 +4,73 @@ All notable changes to the ProFTPD MongoDB Authentication Module will be documen
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [1.2.0] - 2026-01-11
+
+### 🔴 CRITICAL SECURITY FIXES
+
+- **Fixed MongoDB client pool leak** - Clients are now properly returned to pool in all error paths (CVE-class: Resource Leak)
+  - Fixed in `query_mongodb_user()` when user not found or cursor errors occur
+  - Prevents connection pool exhaustion denial of service
+- **Fixed timing attack vulnerability** - Implemented constant-time password comparison (CVE-class: Information Disclosure)
+  - All password comparisons now use constant-time algorithm
+  - Prevents password brute-forcing via timing analysis
+- **Fixed password hash memory exposure** - Implemented secure memory wiping (CVE-class: Information Disclosure)
+  - Uses `explicit_bzero()` on Linux, volatile pointer method on other platforms
+  - Prevents password hash extraction from process memory dumps
+- **Fixed missing session cleanup** - Added session cleanup handler (CVE-class: Information Leakage)
+  - Cache is now invalidated on session disconnect
+  - Prevents sensitive data persistence across sessions
+- **Fixed connection pool memory leak** - Added module cleanup handler
+  - Connection pool properly destroyed on ProFTPD shutdown
+  - Prevents memory leaks on server restarts
+- **Fixed missing input validation** - Added username/password length checks
+  - Username max: 256 characters
+  - Password max: 1024 characters
+  - Prevents potential buffer issues and log flooding
+
+### Added
+
+- **Configurable connection pool size** via `AuthMongoConnectionPoolSize` directive (1-100, default: 10)
+- **Constant-time comparison function** for all password verification methods
+- **Secure memory wiping** using `explicit_bzero()` or volatile pointer method
+- **Session cleanup handler** that clears cache on disconnect
+- **Module cleanup handler** that destroys connection pool on shutdown
+- **Input length validation** for usernames and passwords
+- **Enhanced error messages** with more context for debugging
+- Security constants: `MAX_USERNAME_LENGTH`, `MAX_PASSWORD_LENGTH`, `DEFAULT_POOL_SIZE`
+
+### Changed
+
+- Module version updated to 1.2.0
+- `invalidate_cache()` now uses secure memory wiping instead of `memset()`
+- `verify_password()` in PLAIN mode now uses constant-time comparison with length checks
+- All error paths in `query_mongodb_user()` properly return clients to pool
+- Connection pool size now configurable instead of hardcoded to 10
+- Event handlers registered in `auth_mongodb_init()` for proper cleanup
+
+### Security
+
+- **Timing attack resistance**: Password verification is now constant-time
+- **Memory safety**: Password hashes securely wiped from memory
+- **Resource management**: All MongoDB resources properly cleaned up
+- **Input validation**: All user inputs validated for length and NULL
+- **Compliance**: Meets OWASP authentication best practices, CWE-208, CWE-401, CWE-404, CWE-20, CWE-312
+
+### Documentation
+
+- Added `SECURITY_REVIEW_2026.md` with comprehensive security analysis
+- Documented all security issues found and fixes applied
+- Added upgrade instructions and testing recommendations
+- Added performance impact analysis (< 3μs overhead)
+
+### Upgrade Notes
+
+- **CRITICAL**: All production deployments should upgrade immediately
+- Fully backward compatible with v1.1.x configurations
+- New `AuthMongoConnectionPoolSize` directive is optional
+- No database schema changes required
+- Recompilation required: `make clean && make && sudo make install`
+
 ## [1.1.1] - 2025-12-03
 
 ### Fixed

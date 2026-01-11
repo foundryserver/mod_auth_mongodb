@@ -14,10 +14,11 @@
 # QUICK START:
 # 1. Replace MongoDB connection string with your actual values
 # 2. Adjust field names if your MongoDB schema differs
-# 3. Create user home directories: mkdir -p /home/username
-# 4. Set ownership: chown username:groupname /home/username
-# 5. Test configuration: proftpd -t -c /etc/proftpd/proftpd.conf
-# 6. Restart: systemctl restart proftpd
+# 3. Optional: Adjust AuthMongoConnectionPoolSize for your load (default: 10)
+# 4. Create user home directories: mkdir -p /home/username
+# 5. Set ownership: chown username:groupname /home/username
+# 6. Test configuration: proftpd -t -c /etc/proftpd/proftpd.conf
+# 7. Restart: systemctl restart proftpd
 
 # ============================================================================
 # BASIC SERVER CONFIGURATION
@@ -32,8 +33,11 @@ ServerType                      standalone
 # This is the primary/default server
 DefaultServer                   on
 
-# FTP control port (21 is standard FTP)
-Port                            21
+# FTP control port (2222 for SFTP, 21 is standard FTP)
+Port                            2222
+
+# Don't use IPv6 support by default.
+UseIPv6                         off
 
 # Default file creation mask (files created as 644, dirs as 755)
 Umask                           022
@@ -42,9 +46,22 @@ Umask                           022
 MaxInstances                    30
 
 # User/group for main daemon process (NOT for authenticated users)
-# The daemon drops privileges after binding to port 21
+# The daemon drops privileges after binding to port
 User                            nobody
 Group                           nogroup
+
+# Jail all users to their home directory
+# The ~ means each user's home directory (from AuthMongoDocumentFieldPath)
+# Users cannot navigate above their home directory - they see it as /
+DefaultRoot                     ~
+
+# Normally, we want files to be overwriteable.
+AllowOverwrite                  on
+
+# Bar use of SITE CHMOD by default
+<Limit SITE_CHMOD>
+  DenyAll
+</Limit>
 
 # ============================================================================
 # LOGGING CONFIGURATION
@@ -86,7 +103,7 @@ AuthMongoAuthCollectionName     "users"
 # Field containing the username (used for login)
 AuthMongoDocumentFieldUsername  "username"
 
-# Field containing the password (plain text)
+# Field containing the password (hashed value)
 AuthMongoDocumentFieldPassword  "password"
 
 # Field containing the user ID (stored as string, e.g., "1001")
@@ -119,6 +136,18 @@ AuthMongoNoConnectionString     "Failed to connect to Authentication Server"
 # The module auto-detects the hash format from the stored hash
 AuthMongoPasswordHashMethod     bcrypt
 
+# --- Connection Pool Settings ---
+
+# Maximum size of MongoDB connection pool (1-100)
+# Higher values support more concurrent users but use more memory
+# Default: 10 (suitable for most installations)
+# Adjust based on your concurrent user count:
+# - Light usage (1-10 concurrent): 5-10
+# - Medium usage (10-50 concurrent): 10-20
+# - Heavy usage (50+ concurrent): 20-50
+# OPTIONAL: Comment out to use default value of 10
+AuthMongoConnectionPoolSize     10
+
 # --- Debug Settings ---
 
 # Enable verbose logging for troubleshooting (yes/no)
@@ -126,71 +155,32 @@ AuthMongoPasswordHashMethod     bcrypt
 AuthMongoDebugLogging           yes
 
 # ============================================================================
-# SECURITY: USER JAILING (CHROOT)
+# SFTP CONFIGURATION
 # ============================================================================
 
-# Jail all users to their home directory
-# The ~ means each user's home directory (from AuthMongoDocumentFieldPath)
-# Users cannot navigate above their home directory - they see it as /
-DefaultRoot                     ~
+# Enable SFTP engine
+SFTPEngine                      on
 
-# ============================================================================
-# DIRECTORY PERMISSIONS
-# ============================================================================
+# SFTP authentication method (password from MongoDB)
+SFTPAuthMethods                 password
 
-# Root directory - deny all access by default
-<Directory />
-    AllowOverride              on
+# SFTP Options
+SFTPOptions IgnoreSFTPUploadPerms IgnoreSCPUploadPerms IgnoreSFTPSetOwners IgnoreSFTPSetExtendedAttributes IgnoreSFTPUploadExtendedAttributes
 
-    # Deny all operations at root level
-    <Limit ALL>
-        DenyAll
-    </Limit>
-</Directory>
+# SFTP Compression
+SFTPCompression                 on
 
-# User home directories - allow full access
-<Directory ~>
-    # Allow all operations within user's home directory
-    <Limit ALL>
-        AllowAll
-    </Limit>
-</Directory>
+# Maximum SFTP channels
+SFTPMaxChannels                 10
 
-# ============================================================================
-# SFTP CONFIGURATION (Optional - requires mod_sftp)
-# ============================================================================
+# Don't require valid shell for SFTP users
+RequireValidShell               off
 
-<IfModule mod_sftp.c>
-    # Enable SFTP engine
-    SFTPEngine                  on
-    
-    # SFTP port (2222 is common, 22 conflicts with system SSH)
-    Port                        2222
-
-    # SFTP-specific transfer log
-    SFTPLog                     /var/log/proftpd/sftp.log
-    
-    # Options
-    SFTPOptions IgnoreSFTPUploadPerms IgnoreSCPUploadPerms IgnoreSFTPSetOwners IgnoreSFTPSetExtendedAttributes IgnoreSFTPUploadExtendedAttributes
-
-    #Compression
-    SFTPCompression on
-
-    # --- SFTP Host Keys ---
-    # Generate these with: ssh-keygen -t rsa -f /etc/proftpd/ssh_host_rsa_key -N ""
-    # You need at least one host key for SFTP to work
-    SFTPHostKey                 /etc/ssh/ssh_host_rsa_key
-    SFTPHostKey                 /etc/ssh/ssh_host_ecdsa_key
-
-    # SFTP authentication method (password from MongoDB)
-    SFTPAuthMethods             password
-    
-    # Use MongoDB for SFTP authentication (same as FTP)
-    AuthOrder                   mod_auth_mongodb.c
-    
-    # Jail SFTP users to their home directory (same as FTP)
-    DefaultRoot                 ~
-</IfModule>
+# --- SFTP Host Keys ---
+# Generate these with: ssh-keygen -t rsa -f /etc/ssh/ssh_host_rsa_key -N ""
+# You need at least one host key for SFTP to work
+SFTPHostKey                     /etc/ssh/ssh_host_rsa_key
+SFTPHostKey                     /etc/ssh/ssh_host_ecdsa_key
 
 # ============================================================================
 # MONGODB DOCUMENT SCHEMA REFERENCE
