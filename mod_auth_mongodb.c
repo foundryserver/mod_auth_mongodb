@@ -108,8 +108,8 @@ module auth_mongodb_module;
 
 /* Forward declarations */
 static int auth_mongodb_sess_init(void);
-static int auth_mongodb_module_cleanup(void);
-static int auth_mongodb_sess_cleanup(void);
+static void auth_mongodb_module_cleanup(const void *event_data, void *user_data);
+static void auth_mongodb_sess_cleanup(const void *event_data, void *user_data);
 static int parse_uid_gid(const char *str, unsigned long *out, const char *field_name);
 static int validate_mongodb_configuration(void);
 static int is_cache_valid(const char *username);
@@ -1290,8 +1290,8 @@ static int auth_mongodb_sess_init(void) {
 
 /**
  * auth_mongodb_sess_cleanup - Session cleanup callback
- * 
- * Returns: Always returns 0
+ * @event_data: Event-specific data (unused)
+ * @user_data: User-provided data (unused)
  * 
  * Called when an FTP session ends (client disconnects). This function
  * invalidates the user cache to prevent sensitive data from persisting
@@ -1299,7 +1299,7 @@ static int auth_mongodb_sess_init(void) {
  * 
  * SECURITY: Critical for preventing information leakage between sessions.
  */
-static int auth_mongodb_sess_cleanup(void) {
+static void auth_mongodb_sess_cleanup(const void *event_data, void *user_data) {
     if (mongodb_debug_logging) {
         pr_log_pri(PR_LOG_DEBUG, MOD_AUTH_MONGODB_VERSION 
                    ": Session cleanup - invalidating cache");
@@ -1307,8 +1307,6 @@ static int auth_mongodb_sess_cleanup(void) {
     
     /* Clear sensitive cached data */
     invalidate_cache();
-    
-    return 0;
 }
 
 /**
@@ -1388,15 +1386,15 @@ static int auth_mongodb_init(void) {
 
 /**
  * auth_mongodb_module_cleanup - Module cleanup callback
- * 
- * Returns: Always returns 0
+ * @event_data: Event-specific data (unused)
+ * @user_data: User-provided data (unused)
  * 
  * Called when ProFTPD is shutting down. This function destroys the MongoDB
  * connection pool and performs cleanup of the MongoDB C driver.
  * 
  * IMPORTANT: Prevents memory leaks on server restart/shutdown.
  */
-static int auth_mongodb_module_cleanup(void) {
+static void auth_mongodb_module_cleanup(const void *event_data, void *user_data) {
     pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION ": Module cleanup starting");
     
     /* Destroy connection pool if it exists */
@@ -1414,8 +1412,6 @@ static int auth_mongodb_module_cleanup(void) {
     invalidate_cache();
     
     pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION ": Module cleanup complete");
-    
-    return 0;
 }
 
 /* ==============================================================================
