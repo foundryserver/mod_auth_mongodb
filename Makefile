@@ -27,6 +27,9 @@ LDFLAGS = -shared -Wl,-z,relro,-z,now
 MONGOC_CFLAGS = $(shell pkg-config --cflags libmongoc-1.0)
 MONGOC_LIBS = $(shell pkg-config --libs libmongoc-1.0)
 
+# Extract include paths for prxs (prxs needs -I flags passed separately)
+MONGOC_INCLUDES = $(shell pkg-config --cflags-only-I libmongoc-1.0)
+
 # ProFTPD include path (adjust as needed)
 PROFTPD_INCLUDE = -I/usr/local/include/proftpd -I/usr/include/proftpd
 
@@ -49,7 +52,7 @@ check-deps:
 # Build rule using prxs (recommended)
 all: check-deps
 	@echo "Building $(MODULE) using prxs (ProFTPD Extension Tool)..."
-	prxs -c $(MONGOC_CFLAGS) -l mongoc-1.0 -l bson-1.0 -l rt $(SOURCES)
+	prxs -c $(MONGOC_INCLUDES) -l mongoc-1.0 -l bson-1.0 -l rt $(SOURCES)
 	@echo ""
 	@echo "✓ Module compiled successfully using prxs with libtool"
 	@ls -lh .libs/$(TARGET) 2>/dev/null || ls -lh $(TARGET)

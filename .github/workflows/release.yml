@@ -32,6 +32,9 @@ jobs:
                   cp CHANGELOG.md "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}/"
                   cp proftpd.conf.sample "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}/"
                   cp AI_DISCLOSURE.md "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}/"
+                  cp LICENSE "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}/"
+                  cp DEPENDENCIES.md "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}/"
+                  cp default_proftpd.conf "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}/"
 
                   # Create zip archive
                   zip -r "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}.zip" "mod_auth_mongodb-${{ steps.get_version.outputs.VERSION }}"
