@@ -40,17 +40,8 @@ TARGET = $(MODULE).so
 # Source files
 SOURCES = $(MODULE).c
 
-# Dependency check
-check-deps:
-	@echo "Checking dependencies..."
-	@which pkg-config > /dev/null 2>&1 || (echo "ERROR: pkg-config is not installed" && exit 1)
-	@which prxs > /dev/null 2>&1 || (echo "ERROR: prxs is not installed. Install proftpd-dev or build ProFTPD with --enable-dso" && exit 1)
-	@pkg-config --exists libmongoc-1.0 || (echo "ERROR: libmongoc-1.0 not found. Install mongo-c-driver development package" && exit 1)
-	@pkg-config --exists libbson-1.0 || (echo "ERROR: libbson-1.0 not found. Install libbson development package" && exit 1)
-	@test -f /usr/local/include/proftpd/conf.h -o -f /usr/include/proftpd/conf.h || (echo "ERROR: ProFTPD headers not found. Install proftpd-dev or proftpd-devel package" && exit 1)
-	@echo "All dependencies are satisfied."
-
 # Build rule using prxs (recommended)
+# NOTE: This is the default target (must be first)
 all: check-deps $(MODULE).la
 
 $(MODULE).la: $(SOURCES)
@@ -62,6 +53,16 @@ $(MODULE).la: $(SOURCES)
 	@echo ""
 	@echo "To install: make install"
 	@echo "Or manually: sudo prxs -i $(MODULE).la"
+
+# Dependency check
+check-deps:
+	@echo "Checking dependencies..."
+	@which pkg-config > /dev/null 2>&1 || (echo "ERROR: pkg-config is not installed" && exit 1)
+	@which prxs > /dev/null 2>&1 || (echo "ERROR: prxs is not installed. Install proftpd-dev or build ProFTPD with --enable-dso" && exit 1)
+	@pkg-config --exists libmongoc-1.0 || (echo "ERROR: libmongoc-1.0 not found. Install mongo-c-driver development package" && exit 1)
+	@pkg-config --exists libbson-1.0 || (echo "ERROR: libbson-1.0 not found. Install libbson development package" && exit 1)
+	@test -f /usr/local/include/proftpd/conf.h -o -f /usr/include/proftpd/conf.h || (echo "ERROR: ProFTPD headers not found. Install proftpd-dev or proftpd-devel package" && exit 1)
+	@echo "All dependencies are satisfied."
 
 # Alternative build rule using direct gcc compilation (not recommended)
 direct: check-deps $(TARGET)
