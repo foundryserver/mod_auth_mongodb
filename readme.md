@@ -561,7 +561,7 @@ make && sudo make install
 sudo apt-get install libmongoc-dev libbson-dev  # Debian/Ubuntu
 sudo yum install mongo-c-driver-devel           # RHEL/CentOS
 
-# Verify
+# Verify.
 pkg-config --modversion libmongoc-1.0
 ```
 
