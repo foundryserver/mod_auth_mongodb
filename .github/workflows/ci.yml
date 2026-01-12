@@ -41,14 +41,19 @@ jobs:
                   echo "=== Compiling mod_auth_mongodb.c ==="
                   make
 
-                  echo "=== Checking if module was created ==="
-                  ls -lh mod_auth_mongodb.so
-                  file mod_auth_mongodb.so
-
             - name: Test compilation success
               run: |
-                  if [ ! -f mod_auth_mongodb.so ]; then
+                  echo "=== Searching for compiled module ==="
+                  MODULE_PATH=$(find . -name "mod_auth_mongodb.so" -type f)
+
+                  if [ -z "$MODULE_PATH" ]; then
                       echo "ERROR: mod_auth_mongodb.so was not created"
+                      echo "Build directory contents:"
+                      find . -type f -name "*.so" -o -name "*.la" -o -name "*.o"
                       exit 1
                   fi
+
                   echo "SUCCESS: Module compiled successfully"
+                  echo "Module location: $MODULE_PATH"
+                  ls -lh "$MODULE_PATH"
+                  file "$MODULE_PATH"
