@@ -51,7 +51,9 @@ check-deps:
 	@echo "All dependencies are satisfied."
 
 # Build rule using prxs (recommended)
-all: check-deps
+all: check-deps $(MODULE).la
+
+$(MODULE).la: $(SOURCES)
 	@echo "Building $(MODULE) using prxs (ProFTPD Extension Tool)..."
 	prxs -c $(MONGOC_INCLUDES) -l mongoc-1.0 -l bson-1.0 -l rt $(SOURCES)
 	@echo ""
