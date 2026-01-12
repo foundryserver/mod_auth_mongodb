@@ -1,0 +1,54 @@
+name: CI - Compile Test
+
+on:
+    push:
+        branches: ["**"] # Run on all branches
+    pull_request:
+        branches: ["**"]
+
+jobs:
+    compile-test:
+        runs-on: ubuntu-latest
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@v4
+
+            - name: Install dependencies
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y \
+                      build-essential \
+                      proftpd-dev \
+                      libmongoc-dev \
+                      libbson-dev \
+                      pkg-config
+
+            - name: Verify dependencies
+              run: |
+                  echo "=== Checking ProFTPD headers ==="
+                  ls -la /usr/include/proftpd/ || echo "ProFTPD headers not in /usr/include/proftpd/"
+
+                  echo "=== Checking MongoDB C driver ==="
+                  pkg-config --modversion libmongoc-1.0 || echo "libmongoc not found"
+                  pkg-config --modversion libbson-1.0 || echo "libbson not found"
+
+                  echo "=== Environment info ==="
+                  gcc --version
+
+            - name: Compile module
+              run: |
+                  echo "=== Compiling mod_auth_mongodb.c ==="
+                  make
+
+                  echo "=== Checking if module was created ==="
+                  ls -lh mod_auth_mongodb.so
+                  file mod_auth_mongodb.so
+
+            - name: Test compilation success
+              run: |
+                  if [ ! -f mod_auth_mongodb.so ]; then
+                      echo "ERROR: mod_auth_mongodb.so was not created"
+                      exit 1
+                  fi
+                  echo "SUCCESS: Module compiled successfully"

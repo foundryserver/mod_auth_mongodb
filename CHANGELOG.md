@@ -4,6 +4,23 @@ All notable changes to the ProFTPD MongoDB Authentication Module will be documen
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### 🔒 Security Enhancements
+
+- **Added environment variable support for connection strings** - Prevents credential exposure in version control
+  - Use `${VAR_NAME}` syntax in `AuthMongoConnectionString` directive
+  - Example: `"mongodb://user:${MONGO_PASSWORD}@host:27017/?authSource=admin"`
+  - Variables expanded at module initialization (safe from runtime injection)
+  - Allows separation of configuration from secrets management
+  - Follows security best practices for credential storage
+
+### 📚 Documentation
+
+- Updated `proftpd.conf.sample` with environment variable examples
+- Updated `README.md` with security best practices section
+- Added systemd and init script environment variable configuration examples
+
 ## [1.2.0] - 2026-01-11
 
 ### 🔴 CRITICAL SECURITY FIXES

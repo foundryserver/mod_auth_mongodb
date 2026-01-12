@@ -85,8 +85,24 @@ LoadModule mod_auth_mongodb.c
 
 # Full MongoDB connection URI (supports replica sets, auth, timeouts)
 # Format: mongodb://[username:password@]host1[:port1][,host2[:port2],...][/[defaultauthdb][?options]]
-# REQUIRED: Replace with your actual MongoDB credentials and hosts
-AuthMongoConnectionString       "mongodb://username:password@mongo1.vm.lan:27017,mongo2.vm.lan:27017,mongo3.vm.lan:27017/?retryWrites=true&replicaSet=rs0&readPreference=primary&serverSelectionTimeoutMS=5000&connectTimeoutMS=10000&authSource=admin&authMechanism=SCRAM-SHA-256"
+#
+# SECURITY BEST PRACTICE - Use environment variables for passwords:
+# Instead of hardcoding passwords, use ${VAR_NAME} syntax to reference environment variables.
+# This prevents committing credentials to version control.
+#
+# Example with environment variable:
+#   AuthMongoConnectionString "mongodb://admin:${MONGO_PASSWORD}@localhost:27017/?authSource=admin"
+#
+# Then set the environment variable before starting ProFTPD:
+#   export MONGO_PASSWORD="your_secure_password_here"
+#   systemctl start proftpd
+#
+# Or add to /etc/default/proftpd (Debian/Ubuntu) or /etc/sysconfig/proftpd (RHEL/CentOS):
+#   MONGO_PASSWORD="your_secure_password_here"
+#
+# REQUIRED: Replace with your actual MongoDB connection details
+# The example below shows a replica set configuration with environment variable for password
+AuthMongoConnectionString       "mongodb://username:${MONGO_PASSWORD}@mongo1.vm.lan:27017,mongo2.vm.lan:27017,mongo3.vm.lan:27017/?retryWrites=true&replicaSet=rs0&readPreference=primary&serverSelectionTimeoutMS=5000&connectTimeoutMS=10000&authSource=admin&authMechanism=SCRAM-SHA-256"
 
 # Database name containing user collection
 # REQUIRED: Replace with your database name

@@ -210,23 +210,56 @@ sftp -P 2222 username@localhost
 
 All directives are configured in `proftpd.conf`. See `proftpd.conf.sample` for a fully documented example.
 
-| Directive                        | Required | Description                                                 | Example                                              |
-| -------------------------------- | -------- | ----------------------------------------------------------- | ---------------------------------------------------- |
-| `AuthMongoConnectionString`      | ✅       | MongoDB connection URI (supports replica sets)              | `"mongodb://user:pass@host:27017/?authSource=admin"` |
-| `AuthMongoDatabaseName`          | ✅       | Database name containing user collection                    | `"authentication"`                                   |
-| `AuthMongoAuthCollectionName`    | ✅       | Collection name with user documents                         | `"users"`                                            |
-| `AuthMongoDocumentFieldUsername` | ✅       | Field name for username                                     | `"username"`                                         |
-| `AuthMongoDocumentFieldPassword` | ✅       | Field name for password/hash                                | `"password"`                                         |
-| `AuthMongoDocumentFieldUid`      | ✅       | Field name for user ID (string)                             | `"uid"`                                              |
-| `AuthMongoDocumentFieldGid`      | ✅       | Field name for group ID (string)                            | `"gid"`                                              |
-| `AuthMongoDocumentFieldPath`     | ✅       | Field name for home directory path                          | `"home_directory"`                                   |
-| `AuthMongoPasswordHashMethod`    | ❌       | Hash method: `plain`, `bcrypt`, `crypt`, `sha256`, `sha512` | `bcrypt` (default: `plain`)                          |
-| `AuthMongoConnectionPoolSize`    | ❌       | Max connection pool size (1-100)                            | `20` (default: `10`)                                 |
-| `AuthMongoNoAuthString`          | ❌       | Error message for failed authentication                     | `"Your username/password is incorrect"`              |
-| `AuthMongoNoConnectionString`    | ❌       | Error message for connection failures                       | `"Failed to connect to Authentication Server"`       |
-| `AuthMongoDebugLogging`          | ❌       | Enable debug logging (`yes`/`no`)                           | `yes` (default: `no`)                                |
+| Directive                        | Required | Description                                                 | Example                                                           |
+| -------------------------------- | -------- | ----------------------------------------------------------- | ----------------------------------------------------------------- |
+| `AuthMongoConnectionString`      | ✅       | MongoDB connection URI (supports `${VAR}` env variables)    | `"mongodb://user:${MONGO_PASSWORD}@host:27017/?authSource=admin"` |
+| `AuthMongoDatabaseName`          | ✅       | Database name containing user collection                    | `"authentication"`                                                |
+| `AuthMongoAuthCollectionName`    | ✅       | Collection name with user documents                         | `"users"`                                                         |
+| `AuthMongoDocumentFieldUsername` | ✅       | Field name for username                                     | `"username"`                                                      |
+| `AuthMongoDocumentFieldPassword` | ✅       | Field name for password/hash                                | `"password"`                                                      |
+| `AuthMongoDocumentFieldUid`      | ✅       | Field name for user ID (string)                             | `"uid"`                                                           |
+| `AuthMongoDocumentFieldGid`      | ✅       | Field name for group ID (string)                            | `"gid"`                                                           |
+| `AuthMongoDocumentFieldPath`     | ✅       | Field name for home directory path                          | `"home_directory"`                                                |
+| `AuthMongoPasswordHashMethod`    | ❌       | Hash method: `plain`, `bcrypt`, `crypt`, `sha256`, `sha512` | `bcrypt` (default: `plain`)                                       |
+| `AuthMongoConnectionPoolSize`    | ❌       | Max connection pool size (1-100)                            | `20` (default: `10`)                                              |
+| `AuthMongoNoAuthString`          | ❌       | Error message for failed authentication                     | `"Your username/password is incorrect"`                           |
+| `AuthMongoNoConnectionString`    | ❌       | Error message for connection failures                       | `"Failed to connect to Authentication Server"`                    |
+| `AuthMongoDebugLogging`          | ❌       | Enable debug logging (`yes`/`no`)                           | `yes` (default: `no`)                                             |
 
 ### MongoDB Connection URI Examples
+
+#### Security Best Practice - Use Environment Variables
+
+**To avoid committing passwords to version control**, use environment variable substitution:
+
+```conf
+# In proftpd.conf - use ${VAR_NAME} syntax for sensitive values
+AuthMongoConnectionString "mongodb://admin:${MONGO_PASSWORD}@localhost:27017/?authSource=admin"
+```
+
+Then set the environment variable before starting ProFTPD:
+
+```bash
+# Export in your shell
+export MONGO_PASSWORD="your_secure_password_here"
+systemctl start proftpd
+
+# Or add to systemd service file /etc/systemd/system/proftpd.service:
+[Service]
+Environment="MONGO_PASSWORD=your_secure_password_here"
+
+# Or add to /etc/default/proftpd (Debian/Ubuntu) or /etc/sysconfig/proftpd (RHEL/CentOS):
+MONGO_PASSWORD="your_secure_password_here"
+```
+
+**Benefits:**
+
+- ✅ Passwords not stored in configuration files
+- ✅ Safe to commit `proftpd.conf` to version control
+- ✅ Different passwords per environment (dev/staging/prod)
+- ✅ Follows security best practices
+
+#### Connection String Examples
 
 **Single server:**
 
@@ -234,10 +267,22 @@ All directives are configured in `proftpd.conf`. See `proftpd.conf.sample` for a
 mongodb://user:pass@localhost:27017/?authSource=admin
 ```
 
+**Single server with environment variable (recommended):**
+
+```
+mongodb://user:${MONGO_PASSWORD}@localhost:27017/?authSource=admin
+```
+
 **Replica set with authentication:**
 
 ```
 mongodb://user:pass@mongo1.vm.lan:27017,mongo2.vm.lan:27017,mongo3.vm.lan:27017/?replicaSet=rs0&authSource=admin&authMechanism=SCRAM-SHA-256&serverSelectionTimeoutMS=5000&connectTimeoutMS=10000
+```
+
+**Replica set with environment variable (recommended):**
+
+```
+mongodb://user:${MONGO_PASSWORD}@mongo1.vm.lan:27017,mongo2.vm.lan:27017,mongo3.vm.lan:27017/?replicaSet=rs0&authSource=admin&authMechanism=SCRAM-SHA-256&serverSelectionTimeoutMS=5000&connectTimeoutMS=10000
 ```
 
 **No authentication:**

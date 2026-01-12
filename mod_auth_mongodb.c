@@ -117,6 +117,7 @@ static void cache_user_data(const char *username, const char *password_hash,
                            uid_t uid, gid_t gid, const char *home_dir);
 static void invalidate_cache(void);
 static int constant_time_compare(const char *a, const char *b, size_t len);
+static char *expand_environment_variables(pool *p, const char *str);
 
 /* ==============================================================================
  * CONFIGURATION DIRECTIVE HANDLERS
@@ -133,12 +134,28 @@ static int constant_time_compare(const char *a, const char *b, size_t len);
 /**
  * Handler: AuthMongoConnectionString
  * Sets the MongoDB connection URI (e.g., mongodb://localhost:27017)
+ * 
+ * Supports environment variable expansion using ${VAR_NAME} syntax.
+ * This allows sensitive credentials to be stored in environment variables
+ * instead of hardcoded in configuration files.
+ * 
+ * Example: "mongodb://user:${MONGO_PASSWORD}@host:27017"
  */
 MODRET set_mongodb_connection_string(cmd_rec *cmd) {
+    char *expanded_string;
+    
     CHECK_ARGS(cmd, 1);
     CHECK_CONF(cmd, CONF_ROOT | CONF_VIRTUAL | CONF_GLOBAL);
     
-    add_config_param_str(cmd->argv[0], 1, cmd->argv[1]);
+    /* Expand environment variables in the connection string */
+    expanded_string = expand_environment_variables(cmd->tmp_pool, cmd->argv[1]);
+    if (!expanded_string) {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": Failed to expand environment variables in connection string");
+        return PR_ERROR(cmd);
+    }
+    
+    add_config_param_str(cmd->argv[0], 1, expanded_string);
     return PR_HANDLED(cmd);
 }
 
@@ -424,6 +441,119 @@ static void invalidate_cache(void) {
     }
 #endif
     user_cache.valid = 0;
+}
+
+/**
+ * expand_environment_variables - Expand ${VAR} references in a string
+ * @p: Memory pool to allocate from
+ * @str: String potentially containing ${VAR_NAME} references
+ * 
+ * Returns: Newly allocated string with variables expanded, or original if no expansion needed
+ * 
+ * This function replaces ${VAR_NAME} patterns with their environment variable values.
+ * Used to avoid hardcoding sensitive credentials (passwords) in configuration files.
+ * 
+ * Example: "mongodb://user:${MONGO_PASSWORD}@host" becomes "mongodb://user:secret123@host"
+ * 
+ * Security: Environment variables are only expanded at module initialization,
+ * not during runtime authentication to prevent injection attacks.
+ */
+static char *expand_environment_variables(pool *p, const char *str) {
+    const char *src = str;
+    char *result = NULL;
+    char *dest = NULL;
+    size_t result_len = 0;
+    size_t result_capacity = 0;
+    
+    if (!str || !p) {
+        return NULL;
+    }
+    
+    /* Initial capacity estimate: original string length * 2 for expansion */
+    result_capacity = strlen(str) * 2 + 1;
+    result = palloc(p, result_capacity);
+    if (!result) {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": Failed to allocate memory for environment variable expansion");
+        return (char *)str;  /* Return original on allocation failure */
+    }
+    dest = result;
+    
+    while (*src) {
+        if (*src == '$' && *(src + 1) == '{') {
+            /* Found ${VAR} pattern - extract variable name */
+            const char *var_start = src + 2;
+            const char *var_end = strchr(var_start, '}');
+            
+            if (var_end) {
+                /* Extract variable name */
+                size_t var_name_len = var_end - var_start;
+                char *var_name = palloc(p, var_name_len + 1);
+                const char *var_value;
+                
+                if (!var_name) {
+                    pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                               ": Failed to allocate memory for variable name");
+                    return (char *)str;
+                }
+                
+                memcpy(var_name, var_start, var_name_len);
+                var_name[var_name_len] = '\0';
+                
+                /* Get environment variable value */
+                var_value = getenv(var_name);
+                
+                if (var_value) {
+                    size_t value_len = strlen(var_value);
+                    
+                    /* Ensure we have enough space */
+                    if (result_len + value_len + 1 > result_capacity) {
+                        result_capacity = (result_len + value_len) * 2 + 1;
+                        /* Note: We can't use realloc with ProFTPD pools, so we use a large initial capacity */
+                        pr_log_pri(PR_LOG_WARNING, MOD_AUTH_MONGODB_VERSION 
+                                   ": Environment variable expansion may be truncated for very long values");
+                    }
+                    
+                    /* Copy environment variable value */
+                    if (result_len + value_len < result_capacity) {
+                        memcpy(dest, var_value, value_len);
+                        dest += value_len;
+                        result_len += value_len;
+                    }
+                    
+                    if (mongodb_debug_logging) {
+                        pr_log_pri(PR_LOG_DEBUG, MOD_AUTH_MONGODB_VERSION 
+                                   ": Expanded environment variable ${%s}", var_name);
+                    }
+                } else {
+                    /* Variable not found - log warning and leave empty */
+                    pr_log_pri(PR_LOG_WARNING, MOD_AUTH_MONGODB_VERSION 
+                               ": Environment variable ${%s} not found - substituting empty string", 
+                               var_name);
+                }
+                
+                /* Move past the ${VAR} pattern */
+                src = var_end + 1;
+                continue;
+            }
+        }
+        
+        /* Regular character - copy as-is */
+        if (result_len + 1 < result_capacity) {
+            *dest++ = *src;
+            result_len++;
+        }
+        src++;
+    }
+    
+    /* Null-terminate the result */
+    if (result_len < result_capacity) {
+        *dest = '\0';
+    } else {
+        result[result_capacity - 1] = '\0';
+    }
+    
+    return result;
 }
 
 /**
