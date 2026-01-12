@@ -537,7 +537,7 @@ mongosh
 db.users.find({}, {username: 1, uid: 1, gid: 1})
 
 # Values can be strings ("1001") or numbers (1001)
-# Both are accepted, but must be >= 1
+# Both are accepted, but must be >= 1.
 ```
 
 ### Build Issues
