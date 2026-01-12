@@ -27,8 +27,9 @@ LDFLAGS = -shared -Wl,-z,relro,-z,now
 MONGOC_CFLAGS = $(shell pkg-config --cflags libmongoc-1.0)
 MONGOC_LIBS = $(shell pkg-config --libs libmongoc-1.0)
 
-# Extract include paths for prxs (prxs needs -I flags passed separately)
-MONGOC_INCLUDES = $(shell pkg-config --cflags-only-I libmongoc-1.0)
+# Extract include paths for prxs (prxs needs -I flags passed with spaces: "-I /path")
+# We get "-I/path1 -I/path2" and convert to "-I /path1 -I /path2"
+MONGOC_INCLUDES = $(shell pkg-config --cflags-only-I libmongoc-1.0 | sed 's/-I/-I /g')
 
 # ProFTPD include path (adjust as needed)
 PROFTPD_INCLUDE = -I/usr/local/include/proftpd -I/usr/include/proftpd
