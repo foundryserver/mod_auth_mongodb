@@ -10,6 +10,7 @@ A ProFTPD authentication module that authenticates users against a MongoDB datab
 - ✅ **Comprehensive startup readiness checks** - validates configuration and connectivity at startup
 - ✅ **Thread-safe password verification** using `crypt_r()` on Linux
 - ✅ **Strict input validation** prevents uid/gid exploits (no uid 0 attacks)
+- ✅ **Configurable field names (flexible MongoDB schema)** - supports both flat and nested documents with dot notation
 - ✅ **BSON type safety** - handles string and numeric uid/gid formats
 - ✅ Automatic user chroot jailing to home directory
 - ✅ Per-user uid/gid from MongoDB
@@ -42,7 +43,6 @@ This module has been hardened for production use with the following security mea
 
 - **[CHANGELOG.md](CHANGELOG.md)** - Version history and release notes
 - **[SECURITY_IMPROVEMENTS.md](SECURITY_IMPROVEMENTS.md)** - Detailed technical security improvements
-- **[MIGRATION_GUIDE.md](MIGRATION_GUIDE.md)** - Upgrading from v1.0 to v1.1
 - **[AI_DISCLOSURE.md](AI_DISCLOSURE.md)** - Full transparency about AI assistance in development
 - **[proftpd.conf.sample](proftpd.conf.sample)** - Complete configuration example
 
@@ -303,11 +303,11 @@ AuthMongoNoConnectionString: "Failed to connect to Authentication Server"
 ### Specific Mongo Collection/Document Settings
 
 AuthMongoAuthCollectionName: ( name of the collection to authenticate against )
-AuthMongoDocumentFieldUsername: (name of the document field to authenticate against)
-AuthMongoDocumentFieldPassword: (name of the document field to authenticate against)
-AuthMongoDocumentFieldUid: ( name of the document field to get the uid)
-AuthMongoDocumentFieldGid: ( name of the document field to get the gid)
-AuthMongoDocumentFieldPath: ( name of the document field to get the path to the user data)
+AuthMongoDocumentFieldUsername: (name of the document field to authenticate against, supports dot notation for nested fields)
+AuthMongoDocumentFieldPassword: (name of the document field to authenticate against, supports dot notation for nested fields)
+AuthMongoDocumentFieldUid: ( name of the document field to get the uid, supports dot notation like "server.uid")
+AuthMongoDocumentFieldGid: ( name of the document field to get the gid, supports dot notation like "server.gid")
+AuthMongoDocumentFieldPath: ( name of the document field to get the path to the user data, supports dot notation)
 AuthMongoPasswordHashMethod: ( password hash method: plain, bcrypt, crypt, sha256, sha512 )
 
 ### Sample Connection Uri:
@@ -320,6 +320,8 @@ mongodb://username:password@mongo1.vm.lan:27017,mongo2.vm.lan:27017,mongo3.vm.la
 
 Your MongoDB collection should contain documents with the following structure:
 
+### Flat Document Structure (Traditional)
+
 **With bcrypt (Recommended):**
 
 ```json
@@ -331,6 +333,62 @@ Your MongoDB collection should contain documents with the following structure:
   "gid": "1001",
   "home_directory": "/home/testuser"
 }
+```
+
+### Nested Document Structure (Supported)
+
+**With nested fields using dot notation:**
+
+```json
+{
+  "_id": ObjectId("..."),
+  "username": "testuser",
+  "password": "$2b$10$N9qo8uLOickgx2ZMRZoMye.Ik3JSk5U5p7L6Km1hp7RmWfXfGOIJy",
+  "server": {
+    "uid": 2001,
+    "gid": 2001,
+    "path": "/home/testuser"
+  }
+}
+```
+
+**Configuration for nested fields:**
+
+```apache
+# Use dot notation to access nested fields
+AuthMongoDocumentFieldUsername "username"
+AuthMongoDocumentFieldPassword "password"
+AuthMongoDocumentFieldUid "server.uid"
+AuthMongoDocumentFieldGid "server.gid"
+AuthMongoDocumentFieldPath "server.path"
+```
+
+**Supports arbitrary nesting depth:**
+
+```json
+{
+  "credentials": {
+    "username": "testuser",
+    "password": "$2b$10$..."
+  },
+  "system": {
+    "permissions": {
+      "uid": 1001,
+      "gid": 1001
+    },
+    "filesystem": {
+      "home": "/home/testuser"
+    }
+  }
+}
+```
+
+```apache
+AuthMongoDocumentFieldUsername "credentials.username"
+AuthMongoDocumentFieldPassword "credentials.password"
+AuthMongoDocumentFieldUid "system.permissions.uid"
+AuthMongoDocumentFieldGid "system.permissions.gid"
+AuthMongoDocumentFieldPath "system.filesystem.home"
 ```
 
 **With plain text (Not recommended):**
@@ -707,7 +765,6 @@ For issues:
 
 ## Additional Resources
 
-- **[BUILD.md](BUILD.md)** - Detailed build troubleshooting guide
 - **[proftpd.conf.sample](proftpd.conf.sample)** - Complete configuration with all directives
 - **[CHANGELOG.md](CHANGELOG.md)** - Version history and changes
 - **ProFTPD DSO Guide**: http://www.proftpd.org/docs/howto/DSO.html

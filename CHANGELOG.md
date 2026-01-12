@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ### ✨ Features
 
+- **Added nested BSON field path support** - Field directives now support dot notation for nested documents
+
+  - Supports both flat fields (e.g., `"uid"`) and nested paths (e.g., `"server.uid"`)
+  - New `find_bson_field()` helper function using `bson_iter_find_descendant()`
+  - Works with arbitrary nesting depth (e.g., `"config.server.credentials.uid"`)
+  - Applied to all field mappings: uid, gid, path, password, username
+  - Allows flexible MongoDB schema organization without flattening documents
+  - Backward compatible with existing flat field configurations
+
 - **Added comprehensive startup readiness checks** - Validates configuration and connectivity at first connection
   - Validates all required directives are set
   - Tests MongoDB server connectivity (ping)

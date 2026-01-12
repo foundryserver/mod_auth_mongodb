@@ -632,6 +632,43 @@ static int parse_uid_gid(const char *str, unsigned long *out, const char *field_
 }
 
 /**
+ * find_bson_field - Find a BSON field supporting both flat and nested paths
+ * @iter: Output iterator positioned at the found field
+ * @doc: BSON document to search
+ * @field_path: Field path (e.g., "uid" or "server.uid")
+ * 
+ * Returns: 1 if field found, 0 if not found
+ * 
+ * This function handles both simple field names and dot-notation paths for
+ * nested document fields. For example:
+ * - "uid" searches for a top-level field named "uid"
+ * - "server.uid" searches for doc["server"]["uid"]
+ * 
+ * Uses bson_iter_find_descendant() which properly handles nested paths,
+ * unlike bson_iter_init_find() which only searches top-level fields.
+ */
+static int find_bson_field(bson_iter_t *iter, const bson_t *doc, const char *field_path) {
+    bson_iter_t parent_iter;
+    
+    if (!iter || !doc || !field_path) {
+        return 0;
+    }
+    
+    /* Initialize parent iterator at document root */
+    if (!bson_iter_init(&parent_iter, doc)) {
+        return 0;
+    }
+    
+    /* Use bson_iter_find_descendant for proper nested field support
+     * This handles both "field" and "parent.child.field" paths correctly */
+    if (bson_iter_find_descendant(&parent_iter, field_path, iter)) {
+        return 1;
+    }
+    
+    return 0;
+}
+
+/**
  * verify_password - Verify user password against stored hash (thread-safe)
  * @plain_password: Password provided by user attempting to authenticate
  * @stored_hash: Password hash retrieved from MongoDB document
@@ -961,7 +998,7 @@ MODRET auth_mongodb_getpwnam(cmd_rec *cmd) {
     }
     
     /* Extract uid field with type checking and safe parsing */
-    if (!bson_iter_init_find(&iter, doc, mongodb_field_uid)) {
+    if (!find_bson_field(&iter, doc, mongodb_field_uid)) {
         pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
                    ": Missing uid field '%s' in user document", mongodb_field_uid);
         mongoc_cursor_destroy(cursor);
@@ -1013,7 +1050,7 @@ MODRET auth_mongodb_getpwnam(cmd_rec *cmd) {
     }
     
     /* Extract gid field with type checking and safe parsing */
-    if (!bson_iter_init_find(&iter, doc, mongodb_field_gid)) {
+    if (!find_bson_field(&iter, doc, mongodb_field_gid)) {
         pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
                    ": Missing gid field '%s' in user document", mongodb_field_gid);
         mongoc_cursor_destroy(cursor);
@@ -1065,7 +1102,7 @@ MODRET auth_mongodb_getpwnam(cmd_rec *cmd) {
     }
     
     /* Extract path field with type checking */
-    if (!bson_iter_init_find(&iter, doc, mongodb_field_path)) {
+    if (!find_bson_field(&iter, doc, mongodb_field_path)) {
         pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
                    ": Missing path field '%s' in user document", mongodb_field_path);
         mongoc_cursor_destroy(cursor);
@@ -1086,7 +1123,7 @@ MODRET auth_mongodb_getpwnam(cmd_rec *cmd) {
     
     /* Extract password field for caching (but don't log it) */
     password_str = NULL;
-    if (bson_iter_init_find(&iter, doc, mongodb_field_password)) {
+    if (find_bson_field(&iter, doc, mongodb_field_password)) {
         if (BSON_ITER_HOLDS_UTF8(&iter)) {
             password_str = bson_iter_utf8(&iter, NULL);
         }
@@ -1196,7 +1233,7 @@ MODRET auth_mongodb_auth(cmd_rec *cmd) {
         }
         
         /* Extract password field with type checking */
-        if (!bson_iter_init_find(&iter, doc, mongodb_field_password)) {
+        if (!find_bson_field(&iter, doc, mongodb_field_password)) {
             pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
                        ": Missing password field '%s' in user document", 
                        mongodb_field_password);
