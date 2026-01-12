@@ -7,10 +7,10 @@ A ProFTPD authentication module that authenticates users against a MongoDB datab
 - ✅ MongoDB-based authentication (supports replica sets)
 - ✅ Multiple password hashing methods (bcrypt, SHA-256, SHA-512, crypt, plain)
 - ✅ **Connection pooling** for high-performance concurrent authentication
+- ✅ **Comprehensive startup readiness checks** - validates configuration and connectivity at startup
 - ✅ **Thread-safe password verification** using `crypt_r()` on Linux
 - ✅ **Strict input validation** prevents uid/gid exploits (no uid 0 attacks)
 - ✅ **BSON type safety** - handles string and numeric uid/gid formats
-- ✅ **Startup configuration validation** - fails fast with clear error messages
 - ✅ Automatic user chroot jailing to home directory
 - ✅ Per-user uid/gid from MongoDB
 - ✅ Configurable field names (flexible MongoDB schema)
@@ -435,6 +435,88 @@ Please note: Future contributions may also use AI assistance tools. All contribu
 Copyright (c) 2025. This module is provided as-is for use with ProFTPD.
 
 ## Troubleshooting
+
+### Startup Readiness Checks
+
+The module performs comprehensive validation when the **first client connection** occurs (when the connection pool is created). This ensures configuration is correct and MongoDB is accessible before accepting authentication requests.
+
+**What gets validated:**
+
+1. **Configuration completeness** - all required directives are set
+2. **MongoDB server connectivity** - ping test to verify server is accessible
+3. **Database accessibility** - verifies database exists and credentials are valid
+4. **Collection existence** - confirms collection exists in database
+5. **Sample query** - tests that collection is queryable with configured fields
+
+**Successful startup logs:**
+
+```
+mod_auth_mongodb/1.2.0: ===== INITIALIZING MONGODB CONNECTION =====
+mod_auth_mongodb/1.2.0: Creating MongoDB connection pool...
+mod_auth_mongodb/1.2.0: Connection pool created (max size: 10)
+mod_auth_mongodb/1.2.0: Starting configuration readiness checks...
+mod_auth_mongodb/1.2.0: [1/5] Checking configuration directives...
+mod_auth_mongodb/1.2.0: [1/5] Configuration directives OK
+mod_auth_mongodb/1.2.0: [2/5] Testing MongoDB server connectivity...
+mod_auth_mongodb/1.2.0: [2/5] MongoDB server connectivity OK
+mod_auth_mongodb/1.2.0: [3/5] Verifying database 'authentication' exists...
+mod_auth_mongodb/1.2.0: [3/5] Database 'authentication' OK
+mod_auth_mongodb/1.2.0: [4/5] Verifying collection 'users' exists...
+mod_auth_mongodb/1.2.0: [4/5] Collection 'users' OK (contains 3 documents)
+mod_auth_mongodb/1.2.0: [5/5] Testing sample query on collection...
+mod_auth_mongodb/1.2.0: [5/5] Sample query OK - collection is queryable
+mod_auth_mongodb/1.2.0: ===== READINESS CHECK PASSED - Module is ready =====
+mod_auth_mongodb/1.2.0: Server: mongodb://localhost:27017/?authSource=admin
+mod_auth_mongodb/1.2.0: Database: authentication
+mod_auth_mongodb/1.2.0: Collection: users
+mod_auth_mongodb/1.2.0: Username field: username
+```
+
+**Failed validation - missing directive:**
+
+```
+mod_auth_mongodb/1.2.0: [1/5] Checking configuration directives...
+mod_auth_mongodb/1.2.0: MISSING REQUIRED DIRECTIVE: AuthMongoDatabaseName
+mod_auth_mongodb/1.2.0: Configuration validation FAILED - see errors above
+mod_auth_mongodb/1.2.0: Please add all required directives to proftpd.conf
+mod_auth_mongodb/1.2.0: ===== READINESS CHECK FAILED =====
+mod_auth_mongodb/1.2.0: Module will NOT work until issues are resolved
+```
+
+**Failed validation - MongoDB unreachable:**
+
+```
+mod_auth_mongodb/1.2.0: [2/5] Testing MongoDB server connectivity...
+mod_auth_mongodb/1.2.0: [2/5] MongoDB server connectivity FAILED: No suitable servers found
+mod_auth_mongodb/1.2.0: Please verify MongoDB server is running and accessible
+mod_auth_mongodb/1.2.0: Connection string: mongodb://localhost:27017/?authSource=admin
+mod_auth_mongodb/1.2.0: ===== READINESS CHECK FAILED =====
+```
+
+**Failed validation - collection doesn't exist:**
+
+```
+mod_auth_mongodb/1.2.0: [4/5] Verifying collection 'users' exists...
+mod_auth_mongodb/1.2.0: [4/5] Collection 'users' not accessible: ns not found
+mod_auth_mongodb/1.2.0: Please verify collection exists in database 'authentication'
+```
+
+**To test readiness checks:**
+
+```bash
+# 1. Start ProFTPD (or restart to reload module)
+sudo systemctl restart proftpd
+
+# 2. Trigger first connection (this runs validation)
+ftp localhost
+# or
+sftp -P 2222 localhost
+
+# 3. Check system log for validation results
+sudo tail -50 /var/log/proftpd/system.log | grep "mod_auth_mongodb"
+```
+
+**Important:** Validation occurs on **first connection**, not at ProFTPD startup. This is because configuration directives aren't loaded until a session initializes. If MongoDB is down when the first connection occurs, subsequent connections will still fail until ProFTPD is restarted with MongoDB accessible.
 
 ### Module Loading Issues
 

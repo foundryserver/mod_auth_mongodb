@@ -1362,7 +1362,9 @@ static int auth_mongodb_sess_init(void) {
         bson_error_t error;
         
         pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
-                   ": Creating MongoDB connection pool");
+                   ": ===== INITIALIZING MONGODB CONNECTION =====");
+        pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
+                   ": Creating MongoDB connection pool...");
         
         /* Parse and validate connection URI */
         uri = mongoc_uri_new_with_error(mongodb_connection_string, &error);
@@ -1391,13 +1393,18 @@ static int auth_mongodb_sess_init(void) {
         pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
                    ": Connection pool created (max size: %d)", mongodb_pool_size);
         
-        /* Validate configuration by testing connection */
+        /* Validate configuration with comprehensive readiness checks */
         if (validate_mongodb_configuration() != 0) {
             pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
-                       ": Configuration validation failed - module will not work");
-            /* Don't fail startup, but log prominent warning */
+                       ": ===== READINESS CHECK FAILED =====");
+            pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                       ": Module will NOT work until issues are resolved");
+            pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                       ": Please check error messages above and fix configuration");
+            /* Don't fail startup completely - allow ProFTPD to start
+             * but log prominent errors so admins know auth won't work */
             pr_log_pri(PR_LOG_WARNING, MOD_AUTH_MONGODB_VERSION 
-                       ": Authentication will fail until MongoDB is accessible");
+                       ": All authentication attempts will FAIL until MongoDB is accessible");
         }
     }
     
@@ -1444,24 +1451,95 @@ static void auth_mongodb_sess_cleanup(const void *event_data, void *user_data) {
  * 
  * Returns: 0 on success, -1 on failure
  * 
- * This function validates that the MongoDB configuration is correct by attempting
- * to connect and perform a simple ping operation. Called during module initialization
- * to fail fast if configuration is invalid.
+ * This function performs comprehensive readiness checks at startup:
+ * 1. Validates configuration completeness (all required directives set)
+ * 2. Tests MongoDB server connectivity (ping)
+ * 3. Verifies database exists and is accessible
+ * 4. Verifies authentication collection exists
+ * 5. Tests a sample query on the collection
+ * 
+ * Called during first session initialization (when connection pool is created)
+ * to fail fast if configuration is invalid. All failures are logged to ProFTPD's
+ * SystemLog for easy troubleshooting.
  */
 static int validate_mongodb_configuration(void) {
     mongoc_client_t *client = NULL;
+    mongoc_database_t *database = NULL;
+    mongoc_collection_t *collection = NULL;
     bson_t *ping_cmd = NULL;
+    bson_t *list_collections_cmd = NULL;
     bson_t reply;
     bson_error_t error;
     int success = 0;
+    int validation_failed = 0;
     
+    pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
+               ": Starting configuration readiness checks...");
+    
+    /* ===== STEP 1: Validate configuration completeness ===== */
+    pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
+               ": [1/5] Checking configuration directives...");
+    
+    if (!mongodb_connection_string) {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": MISSING REQUIRED DIRECTIVE: AuthMongoConnectionString");
+        validation_failed = 1;
+    }
+    if (!mongodb_database_name) {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": MISSING REQUIRED DIRECTIVE: AuthMongoDatabaseName");
+        validation_failed = 1;
+    }
+    if (!mongodb_collection_name) {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": MISSING REQUIRED DIRECTIVE: AuthMongoAuthCollectionName");
+        validation_failed = 1;
+    }
+    if (!mongodb_field_username) {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": MISSING REQUIRED DIRECTIVE: AuthMongoDocumentFieldUsername");
+        validation_failed = 1;
+    }
+    if (!mongodb_field_password) {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": MISSING REQUIRED DIRECTIVE: AuthMongoDocumentFieldPassword");
+        validation_failed = 1;
+    }
+    if (!mongodb_field_uid) {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": MISSING REQUIRED DIRECTIVE: AuthMongoDocumentFieldUid");
+        validation_failed = 1;
+    }
+    if (!mongodb_field_gid) {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": MISSING REQUIRED DIRECTIVE: AuthMongoDocumentFieldGid");
+        validation_failed = 1;
+    }
+    if (!mongodb_field_path) {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": MISSING REQUIRED DIRECTIVE: AuthMongoDocumentFieldPath");
+        validation_failed = 1;
+    }
+    
+    if (validation_failed) {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": Configuration validation FAILED - see errors above");
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": Please add all required directives to proftpd.conf");
+        return -1;
+    }
+    
+    pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
+               ": [1/5] Configuration directives OK");
+    
+    /* ===== STEP 2: Validate connection pool ===== */
     if (!mongodb_client_pool) {
         pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
                    ": Connection pool not initialized");
         return -1;
     }
     
-    /* Get a client from the pool to test connectivity */
+    /* Get a client from the pool for readiness tests */
     client = mongoc_client_pool_pop(mongodb_client_pool);
     if (!client) {
         pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
@@ -1469,24 +1547,173 @@ static int validate_mongodb_configuration(void) {
         return -1;
     }
     
-    /* Attempt to ping the MongoDB server */
+    /* ===== STEP 3: Test MongoDB server connectivity ===== */
+    pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
+               ": [2/5] Testing MongoDB server connectivity...");
+    
     ping_cmd = BCON_NEW("ping", BCON_INT32(1));
     success = mongoc_client_command_simple(client, "admin", ping_cmd, NULL, &reply, &error);
     
     bson_destroy(ping_cmd);
     bson_destroy(&reply);
-    mongoc_client_pool_push(mongodb_client_pool, client);
     
     if (!success) {
         pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
-                   ": MongoDB connection test failed: %s", error.message);
+                   ": [2/5] MongoDB server connectivity FAILED: %s", error.message);
         pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
-                   ": Please check your AuthMongoConnectionString directive");
+                   ": Please verify MongoDB server is running and accessible");
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": Connection string: %s", mongodb_connection_string);
+        mongoc_client_pool_push(mongodb_client_pool, client);
         return -1;
     }
     
     pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
-               ": MongoDB connection validated successfully");
+               ": [2/5] MongoDB server connectivity OK");
+    
+    /* ===== STEP 4: Verify database exists ===== */
+    pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
+               ": [3/5] Verifying database '%s' exists...", mongodb_database_name);
+    
+    database = mongoc_client_get_database(client, mongodb_database_name);
+    if (!database) {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": [3/5] Failed to access database '%s'", mongodb_database_name);
+        mongoc_client_pool_push(mongodb_client_pool, client);
+        return -1;
+    }
+    
+    /* Test database accessibility with a listCollections command */
+    list_collections_cmd = BCON_NEW("listCollections", BCON_INT32(1), 
+                                    "nameOnly", BCON_BOOL(true));
+    success = mongoc_database_command_simple(database, list_collections_cmd, 
+                                            NULL, &reply, &error);
+    bson_destroy(list_collections_cmd);
+    
+    if (!success) {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": [3/5] Database '%s' not accessible: %s", 
+                   mongodb_database_name, error.message);
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": Please verify database exists and credentials are correct");
+        bson_destroy(&reply);
+        mongoc_database_destroy(database);
+        mongoc_client_pool_push(mongodb_client_pool, client);
+        return -1;
+    }
+    
+    bson_destroy(&reply);
+    pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
+               ": [3/5] Database '%s' OK", mongodb_database_name);
+    
+    /* ===== STEP 5: Verify collection exists ===== */
+    pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
+               ": [4/5] Verifying collection '%s' exists...", mongodb_collection_name);
+    
+    collection = mongoc_database_get_collection(database, mongodb_collection_name);
+    if (!collection) {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": [4/5] Failed to access collection '%s'", mongodb_collection_name);
+        mongoc_database_destroy(database);
+        mongoc_client_pool_push(mongodb_client_pool, client);
+        return -1;
+    }
+    
+    /* Verify collection actually exists by attempting a count */
+    bson_t *count_query = bson_new();
+    int64_t doc_count = mongoc_collection_count_documents(collection, count_query, 
+                                                          NULL, NULL, NULL, &error);
+    bson_destroy(count_query);
+    
+    if (doc_count < 0) {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": [4/5] Collection '%s' not accessible: %s", 
+                   mongodb_collection_name, error.message);
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": Please verify collection exists in database '%s'", 
+                   mongodb_database_name);
+        mongoc_collection_destroy(collection);
+        mongoc_database_destroy(database);
+        mongoc_client_pool_push(mongodb_client_pool, client);
+        return -1;
+    }
+    
+    pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
+               ": [4/5] Collection '%s' OK (contains %lld documents)", 
+               mongodb_collection_name, (long long)doc_count);
+    
+    if (doc_count == 0) {
+        pr_log_pri(PR_LOG_WARNING, MOD_AUTH_MONGODB_VERSION 
+                   ": WARNING: Collection '%s' is EMPTY - no users can authenticate", 
+                   mongodb_collection_name);
+    }
+    
+    /* ===== STEP 6: Test sample query ===== */
+    pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
+               ": [5/5] Testing sample query on collection...");
+    
+    /* Attempt to query for a document with the configured username field
+     * This validates that the field mapping is correct and queries work */
+    bson_t *test_query = BCON_NEW(mongodb_field_username, "{", "$exists", BCON_BOOL(true), "}");
+    mongoc_cursor_t *cursor = mongoc_collection_find_with_opts(collection, test_query, 
+                                                                NULL, NULL);
+    
+    if (!cursor) {
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": [5/5] Failed to execute test query on collection");
+        bson_destroy(test_query);
+        mongoc_collection_destroy(collection);
+        mongoc_database_destroy(database);
+        mongoc_client_pool_push(mongodb_client_pool, client);
+        return -1;
+    }
+    
+    /* Try to fetch one document to validate query works */
+    const bson_t *doc;
+    if (mongoc_cursor_next(cursor, &doc)) {
+        /* Successfully retrieved a document - validation passed */
+        pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
+                   ": [5/5] Sample query OK - collection is queryable");
+    } else {
+        /* Check if there was an error or just no documents matched */
+        if (mongoc_cursor_error(cursor, &error)) {
+            pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                       ": [5/5] Test query failed: %s", error.message);
+            bson_destroy(test_query);
+            mongoc_cursor_destroy(cursor);
+            mongoc_collection_destroy(collection);
+            mongoc_database_destroy(database);
+            mongoc_client_pool_push(mongodb_client_pool, client);
+            return -1;
+        } else {
+            /* No error, just no documents with username field */
+            pr_log_pri(PR_LOG_WARNING, MOD_AUTH_MONGODB_VERSION 
+                       ": WARNING: No documents found with field '%s'", 
+                       mongodb_field_username);
+            pr_log_pri(PR_LOG_WARNING, MOD_AUTH_MONGODB_VERSION 
+                       ": Please verify your AuthMongoDocumentFieldUsername setting");
+        }
+    }
+    
+    /* Cleanup test query resources */
+    bson_destroy(test_query);
+    mongoc_cursor_destroy(cursor);
+    mongoc_collection_destroy(collection);
+    mongoc_database_destroy(database);
+    mongoc_client_pool_push(mongodb_client_pool, client);
+    
+    /* ===== All validation checks passed ===== */
+    pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
+               ": ===== READINESS CHECK PASSED - Module is ready =====");
+    pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
+               ": Server: %s", mongodb_connection_string);
+    pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
+               ": Database: %s", mongodb_database_name);
+    pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
+               ": Collection: %s", mongodb_collection_name);
+    pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
+               ": Username field: %s", mongodb_field_username);
+    
     return 0;
 }
 

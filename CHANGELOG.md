@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### ✨ Features
+
+- **Added comprehensive startup readiness checks** - Validates configuration and connectivity at first connection
+  - Validates all required directives are set
+  - Tests MongoDB server connectivity (ping)
+  - Verifies database exists and is accessible
+  - Confirms collection exists in database
+  - Tests sample query to verify field mappings
+  - Detailed progress logging for each validation step
+  - Clear error messages for troubleshooting configuration issues
+
 ### 🔒 Security Enhancements
 
 - **Added environment variable support for connection strings** - Prevents credential exposure in version control
