@@ -867,7 +867,9 @@ static const bson_t* query_mongodb_user(const char *username, mongoc_client_t **
         pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
                    ": Failed to execute query");
         mongoc_collection_destroy(collection);
-        mongoc_client_destroy(client);
+        /* CRITICAL FIX: Return client to pool instead of destroying it
+         * Destroying would leak the connection and eventually exhaust the pool */
+        mongoc_client_pool_push(mongodb_client_pool, client);
         if (mongodb_error_noconnection) {
             pr_response_add_err(R_530, "%s", mongodb_error_noconnection);
         }
