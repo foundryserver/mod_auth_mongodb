@@ -858,8 +858,11 @@ static const bson_t* query_mongodb_user(const char *username, mongoc_client_t **
         bson_free(query_str);
     }
     
-    /* Execute query */
-    cursor = mongoc_collection_find_with_opts(collection, query, NULL, NULL);
+    /* Execute query with timeout to prevent blocking on slow responses */
+    bson_t *opts = NULL;
+    opts = BCON_NEW("maxTimeMS", BCON_INT32(2000));  /* 2 second query timeout */
+    cursor = mongoc_collection_find_with_opts(collection, query, opts, NULL);
+    bson_destroy(opts);
     bson_destroy(query);
     mongoc_database_destroy(database);
     
@@ -1414,6 +1417,34 @@ static int auth_mongodb_sess_init(void) {
                        ": Please check your AuthMongoConnectionString directive");
             return -1;
         }
+        
+        /* PERFORMANCE FIX: Set aggressive timeouts for authentication responsiveness
+         * These settings prevent blocking when handling rapid concurrent connections.
+         * All timeouts are in milliseconds.
+         */
+        /* Server selection timeout: How long to wait to find a suitable server (default: 30000ms)
+         * Reduced to 2000ms (2 seconds) for fast failure */
+        if (!mongoc_uri_set_option_as_int32(uri, MONGOC_URI_SERVERSELECTIONTIMEOUTMS, 2000)) {
+            pr_log_pri(PR_LOG_WARNING, MOD_AUTH_MONGODB_VERSION 
+                       ": Failed to set serverSelectionTimeoutMS");
+        }
+        
+        /* Socket timeout: Maximum time for socket operations (default: infinite)
+         * Set to 3000ms (3 seconds) to prevent indefinite blocking */
+        if (!mongoc_uri_set_option_as_int32(uri, MONGOC_URI_SOCKETTIMEOUTMS, 3000)) {
+            pr_log_pri(PR_LOG_WARNING, MOD_AUTH_MONGODB_VERSION 
+                       ": Failed to set socketTimeoutMS");
+        }
+        
+        /* Connect timeout: Maximum time to establish initial connection (default: 10000ms)
+         * Reduced to 2000ms (2 seconds) */
+        if (!mongoc_uri_set_option_as_int32(uri, MONGOC_URI_CONNECTTIMEOUTMS, 2000)) {
+            pr_log_pri(PR_LOG_WARNING, MOD_AUTH_MONGODB_VERSION 
+                       ": Failed to set connectTimeoutMS");
+        }
+        
+        pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
+                   ": Configured timeouts: serverSelection=2s, socket=3s, connect=2s");
         
         /* Create connection pool with reasonable limits */
         mongodb_client_pool = mongoc_client_pool_new(uri);
