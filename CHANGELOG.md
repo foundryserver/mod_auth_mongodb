@@ -64,6 +64,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - Username max: 256 characters
   - Password max: 1024 characters
   - Prevents potential buffer issues and log flooding
+- **Fixed connection blocking**
+  - When sftp client connects in rapid succession, the auth routine was blocking new authentications.
 
 ### Added
 
