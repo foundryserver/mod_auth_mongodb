@@ -43,7 +43,11 @@ UseIPv6                         off
 Umask                           022
 
 # Maximum number of simultaneous connections
-MaxInstances                    30
+# IMPORTANT: For parallel SFTP uploads, set this to at least 2x your expected
+# concurrent users. Each SFTP client may open 5-10 parallel connections.
+# Example: 10 concurrent users × 10 connections = 100 needed
+# Recommended: 50-100 for production SFTP servers
+MaxInstances                    100
 
 # User/group for main daemon process (NOT for authenticated users)
 # The daemon drops privileges after binding to port
@@ -156,13 +160,26 @@ AuthMongoPasswordHashMethod     bcrypt
 
 # Maximum size of MongoDB connection pool (1-100)
 # Higher values support more concurrent users but use more memory
-# Default: 10 (suitable for most installations)
-# Adjust based on your concurrent user count:
-# - Light usage (1-10 concurrent): 5-10
-# - Medium usage (10-50 concurrent): 10-20
-# - Heavy usage (50+ concurrent): 20-50
-# OPTIONAL: Comment out to use default value of 10
-AuthMongoConnectionPoolSize     10
+# Default: 50 (increased from 10 to handle parallel SFTP connections)
+#
+# IMPORTANT FOR SFTP: SFTP clients often open multiple parallel connections
+# for file transfers. Each connection requires a MongoDB client from the pool.
+# Symptoms of pool exhaustion:
+#   - "Failed to get MongoDB client from pool" errors
+#   - Connection delays/timeouts
+#   - Some transfers fail while others succeed
+#
+# Recommended values based on usage:
+# - Light usage (1-5 concurrent clients):     10-20
+# - Medium usage (5-15 concurrent clients):   20-40
+# - Heavy usage (15+ concurrent clients):     40-80
+# - Parallel SFTP uploads (multiple files):   50+ (recommended)
+#
+# Formula: (max concurrent SFTP clients × 5) + 10 = pool size
+# Example: 10 clients with parallel uploads = (10 × 5) + 10 = 60
+#
+# OPTIONAL: Comment out to use default value of 50
+AuthMongoConnectionPoolSize     50
 
 # --- Debug Settings ---
 

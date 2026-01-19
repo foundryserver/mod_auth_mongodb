@@ -59,7 +59,7 @@
 /* Security constants */
 #define MAX_USERNAME_LENGTH 256
 #define MAX_PASSWORD_LENGTH 1024
-#define DEFAULT_POOL_SIZE 10
+#define DEFAULT_POOL_SIZE 50  /* Increased from 10 to handle parallel SFTP connections */
 
 /* Module configuration structure - runtime configuration values loaded from
  * ProFTPD config file during session initialization. These values determine
@@ -826,11 +826,16 @@ static const bson_t* query_mongodb_user(const char *username, mongoc_client_t **
         return NULL;
     }
     
-    /* Get client from connection pool (reuses existing connections) */
-    client = mongoc_client_pool_pop(mongodb_client_pool);
+    /* Get client from connection pool with timeout to prevent indefinite blocking
+     * CRITICAL FIX: With parallel connections, we could block here if pool is exhausted.
+     * Try to get a client, but don't block forever. */
+    client = mongoc_client_pool_try_pop(mongodb_client_pool);
     if (!client) {
         pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
-                   ": Failed to get MongoDB client from pool");
+                   ": Failed to get MongoDB client from pool (pool may be exhausted)");
+        pr_log_pri(PR_LOG_ERR, MOD_AUTH_MONGODB_VERSION 
+                   ": Pool size: %d - Consider increasing AuthMongoConnectionPoolSize", 
+                   mongodb_pool_size);
         if (mongodb_error_noconnection) {
             pr_response_add_err(R_530, "%s", mongodb_error_noconnection);
         }
@@ -839,7 +844,8 @@ static const bson_t* query_mongodb_user(const char *username, mongoc_client_t **
     
     if (mongodb_debug_logging) {
         pr_log_pri(PR_LOG_DEBUG, MOD_AUTH_MONGODB_VERSION 
-                   ": Connected to MongoDB, querying user '%s'", username);
+                   ": Got client from pool, querying user '%s' (pool size: %d)", 
+                   username, mongodb_pool_size);
     }
     
     /* Get database and collection */
@@ -917,8 +923,14 @@ static const bson_t* query_mongodb_user(const char *username, mongoc_client_t **
     
     mongoc_cursor_destroy(cursor);
     mongoc_collection_destroy(collection);
-    /* Return client to pool instead of destroying it */
+    /* CRITICAL: Return client to pool instead of destroying it to prevent pool exhaustion */
     mongoc_client_pool_push(mongodb_client_pool, client);
+    
+    if (mongodb_debug_logging) {
+        pr_log_pri(PR_LOG_DEBUG, MOD_AUTH_MONGODB_VERSION 
+                   ": Returned client to pool (user not found)");
+    }
+    
     return NULL;
 }
 
@@ -1160,6 +1172,11 @@ MODRET auth_mongodb_getpwnam(cmd_rec *cmd) {
     mongoc_collection_destroy(collection);
     mongoc_client_pool_push(mongodb_client_pool, client);
     
+    if (mongodb_debug_logging) {
+        pr_log_pri(PR_LOG_DEBUG, MOD_AUTH_MONGODB_VERSION 
+                   ": Returned client to pool (getpwnam success for '%s')", username);
+    }
+    
     return mod_create_data(cmd, pw);
 }
 
@@ -1300,6 +1317,11 @@ MODRET auth_mongodb_auth(cmd_rec *cmd) {
         mongoc_cursor_destroy(cursor);
         mongoc_collection_destroy(collection);
         mongoc_client_pool_push(mongodb_client_pool, client);
+        
+        if (mongodb_debug_logging) {
+            pr_log_pri(PR_LOG_DEBUG, MOD_AUTH_MONGODB_VERSION 
+                       ": Returned client to pool (auth success for '%s')", username);
+        }
     }
     
     session.auth_mech = MOD_AUTH_MONGODB_VERSION;
@@ -1462,6 +1484,16 @@ static int auth_mongodb_sess_init(void) {
         
         pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
                    ": Connection pool created (max size: %d)", mongodb_pool_size);
+        pr_log_pri(PR_LOG_INFO, MOD_AUTH_MONGODB_VERSION 
+                   ": IMPORTANT: For parallel SFTP connections, recommended pool size >= 20");
+        
+        if (mongodb_pool_size < 20) {
+            pr_log_pri(PR_LOG_WARNING, MOD_AUTH_MONGODB_VERSION 
+                       ": WARNING: Pool size %d may be too small for parallel connections", 
+                       mongodb_pool_size);
+            pr_log_pri(PR_LOG_WARNING, MOD_AUTH_MONGODB_VERSION 
+                       ": Consider setting AuthMongoConnectionPoolSize to at least 20");
+        }
         
         /* Validate configuration with comprehensive readiness checks */
         if (validate_mongodb_configuration() != 0) {
